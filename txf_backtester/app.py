@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.5.5 雲端作業模式／Google Drive 自動上傳）。
+app.py - 台指期回測工具 Streamlit 介面（v0.5.8 OAuth 雲端閉環模式）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -564,6 +564,7 @@ BUNDLED_BATCH_009_PATH = os.path.join(APP_DIR, "bundled_strategies", BUNDLED_BAT
 # v0.5.5：Streamlit 雲端部署時，程式從 repo 根目錄啟動；app.py 位於 txf_backtester/。
 # 因此資料預設要優先指向 txf_backtester/data，才能讀到 txf_backtester/data/prepared/*.csv。
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"  # MTX Test Record / _批次回測結果
+DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"  # MTX Test Record / _策略投放箱
 
 
 def prepared_mtx_path(folder: str) -> str:
@@ -786,12 +787,7 @@ def _st_secret_get(key: str, default=None):
 
 
 def get_gdrive_service_account_info():
-    """讀取 Google Drive 自動上傳用 service account 設定。
-
-    支援兩種 Streamlit Secrets：
-    1) [gcp_service_account] 區塊：直接貼 service account JSON 的各欄位。
-    2) GDRIVE_SERVICE_ACCOUNT_JSON：一整段 JSON 字串。
-    """
+    """讀取舊版 service account 設定，僅作向下相容備援。"""
     try:
         if "gcp_service_account" in st.secrets:
             return dict(st.secrets["gcp_service_account"])
@@ -803,6 +799,38 @@ def get_gdrive_service_account_info():
     return None
 
 
+def get_gdrive_oauth_config() -> dict | None:
+    """讀取 Google Drive OAuth Refresh Token 設定。"""
+    client_id = _st_secret_get("GDRIVE_OAUTH_CLIENT_ID", "") or os.environ.get("GDRIVE_OAUTH_CLIENT_ID", "")
+    client_secret = _st_secret_get("GDRIVE_OAUTH_CLIENT_SECRET", "") or os.environ.get("GDRIVE_OAUTH_CLIENT_SECRET", "")
+    refresh_token = _st_secret_get("GDRIVE_OAUTH_REFRESH_TOKEN", "") or os.environ.get("GDRIVE_OAUTH_REFRESH_TOKEN", "")
+    token_uri = (
+        _st_secret_get("GDRIVE_OAUTH_TOKEN_URI", "")
+        or os.environ.get("GDRIVE_OAUTH_TOKEN_URI", "")
+        or "https://oauth2.googleapis.com/token"
+    )
+    if client_id and client_secret and refresh_token:
+        return {
+            "auth_type": "oauth",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "token_uri": token_uri,
+        }
+    return None
+
+
+def get_gdrive_auth_config() -> dict | None:
+    """OAuth 優先；沒有 OAuth 時才使用舊版 service account。"""
+    oauth_config = get_gdrive_oauth_config()
+    if oauth_config:
+        return oauth_config
+    service_account_info = get_gdrive_service_account_info()
+    if service_account_info:
+        return {"auth_type": "service_account", "service_account_info": service_account_info}
+    return None
+
+
 def get_gdrive_results_parent_folder_id() -> str:
     return (
         _st_secret_get("GDRIVE_RESULTS_PARENT_FOLDER_ID", "")
@@ -811,21 +839,53 @@ def get_gdrive_results_parent_folder_id() -> str:
     )
 
 
-def upload_result_zip_to_google_drive(zip_bytes: bytes, zip_name: str, result_folder_name: str) -> tuple[str, str]:
-    """將回測 ZIP 與解壓後內容自動上傳到 Google Drive。
+def get_gdrive_strategy_folder_id() -> str:
+    return (
+        _st_secret_get("GDRIVE_STRATEGY_FOLDER_ID", "")
+        or os.environ.get("GDRIVE_STRATEGY_FOLDER_ID", "")
+        or DEFAULT_GDRIVE_STRATEGY_FOLDER_ID
+    )
 
-    回傳：(folder_url, error_message)。未設定 secrets 時不視為程式錯誤，而是回傳提示文字。
-    """
-    service_account_info = get_gdrive_service_account_info()
-    if not service_account_info:
-        return "", "尚未設定 Streamlit Secrets：gcp_service_account 或 GDRIVE_SERVICE_ACCOUNT_JSON。"
+
+@st.cache_data(ttl=60, show_spinner=False)
+def list_cloud_strategy_files() -> list:
+    """從 Google Drive 的 _策略投放箱列出 JSON，最新者排第一。"""
+    auth_config = get_gdrive_auth_config()
+    if not auth_config:
+        raise ValueError("尚未設定 Google Drive OAuth Secrets。")
+    from google_drive_uploader import list_json_files_in_drive_folder
+
+    return list_json_files_in_drive_folder(auth_config, get_gdrive_strategy_folder_id())
+
+
+def load_batch_json_from_drive_file(file_id: str) -> str:
+    """以 OAuth 從策略投放箱下載並驗證一個 batch JSON。"""
+    auth_config = get_gdrive_auth_config()
+    if not auth_config:
+        raise ValueError("尚未設定 Google Drive OAuth Secrets。")
+    from google_drive_uploader import download_drive_file_bytes
+
+    data = download_drive_file_bytes(auth_config, file_id)
+    text = data.decode("utf-8-sig", errors="strict").strip()
+    if not text:
+        raise ValueError("雲端策略 JSON 是空檔。")
+    json.loads(text)
+    return text
+
+
+def upload_result_zip_to_google_drive(zip_bytes: bytes, zip_name: str, result_folder_name: str) -> tuple[str, str]:
+    """將回測 ZIP 與解壓後內容自動上傳到 Google Drive。"""
+    auth_config = get_gdrive_auth_config()
+    if not auth_config:
+        return "", "尚未設定 Google Drive OAuth Secrets。"
     parent_id = get_gdrive_results_parent_folder_id()
     if not parent_id:
         return "", "尚未設定 Google Drive 目標資料夾 ID。"
     try:
         from google_drive_uploader import upload_zip_result_to_drive
+
         result = upload_zip_result_to_drive(
-            service_account_info=service_account_info,
+            auth_config=auth_config,
             parent_folder_id=parent_id,
             result_folder_name=result_folder_name,
             zip_name=zip_name,
@@ -1250,15 +1310,36 @@ with st.sidebar:
             st.error(f"參數檔讀取失敗: {e}")
 
     st.markdown("#### 批次策略回測")
-    with st.expander("雲端策略連結（預設）", expanded=True):
-        st.caption("新電腦不用安裝 Google Drive 桌面版；預設會讀雲端 JSON。若 Google Drive 回傳分享網頁，會自動改用內建 batch_009。")
-        cloud_url = st.text_input(
-            "雲端策略 JSON 連結",
-            value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
-            key="batch_cloud_url",
-            help="可貼 Google Drive 檔案分享連結；預設為目前最新 batch_009。若雲端讀取失敗，本版會自動使用內建 batch_009。",
-        )
-        st.caption(f"備援內建策略：{BUNDLED_BATCH_009_FILENAME}")
+    with st.expander("雲端策略投放箱（預設）", expanded=True):
+        st.caption("直接讀取 Google Drive 的 `_策略投放箱`；最新 batch JSON 會排在第一個。")
+        cloud_files = []
+        cloud_list_error = ""
+        selected_cloud_file = None
+        try:
+            cloud_files = list_cloud_strategy_files()
+        except Exception as e:  # noqa: BLE001
+            cloud_list_error = str(e)
+
+        if cloud_list_error:
+            st.warning(f"暫時無法讀取雲端策略投放箱：{cloud_list_error}")
+        elif cloud_files:
+            labels = [
+                f"{item.get('name', '未命名.json')}｜{item.get('modifiedTime', '')}"
+                for item in cloud_files
+            ]
+            cloud_pick = st.selectbox(
+                "目前選擇的雲端批次策略",
+                options=list(range(len(cloud_files))),
+                format_func=lambda i: labels[i],
+                key="batch_cloud_drive_pick",
+            )
+            selected_cloud_file = cloud_files[cloud_pick]
+            st.success(f"已連線策略投放箱，共找到 {len(cloud_files)} 個 JSON。")
+            st.caption(f"目前檔案：`{selected_cloud_file.get('name', '')}`")
+        else:
+            selected_cloud_file = None
+            st.info("雲端策略投放箱目前沒有 JSON 檔。")
+
         cloud_mode = st.radio(
             "雲端策略批次回測模式",
             [
@@ -1271,12 +1352,36 @@ with st.sidebar:
             key="batch_cloud_mode",
             help="前後期行情對照會自動跑兩段並產生對照表；其餘模式只跑單一期間。",
         )
-        if st.button("▶ 開始雲端批次回測", use_container_width=True, type="primary"):
+        refresh_col, run_col = st.columns(2)
+        if refresh_col.button("🔄 重新整理策略", use_container_width=True):
+            list_cloud_strategy_files.clear()
+            st.rerun()
+        if run_col.button(
+            "▶ 開始雲端批次回測",
+            use_container_width=True,
+            type="primary",
+            disabled=not bool(selected_cloud_file),
+        ):
             try:
-                raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
+                raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
+                loaded_from = "gdrive:" + selected_cloud_file["id"] + ":" + selected_cloud_file.get("modifiedTime", "")
                 set_batch_json_and_queue(raw, loaded_from, cloud_mode)
             except Exception as e:  # noqa: BLE001
                 st.error(f"批次策略讀取失敗：{e}")
+
+        with st.expander("手動雲端連結（備用）", expanded=False):
+            cloud_url = st.text_input(
+                "雲端策略 JSON 連結",
+                value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
+                key="batch_cloud_url",
+            )
+            st.caption(f"最後備援內建策略：{BUNDLED_BATCH_009_FILENAME}")
+            if st.button("使用手動連結載入", use_container_width=True):
+                try:
+                    raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
+                    set_batch_json_and_queue(raw, loaded_from, cloud_mode)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"批次策略讀取失敗：{e}")
 
     with st.expander("本機策略投放箱（備用）", expanded=False):
         ok, msg = ensure_strategy_dropbox()
