@@ -24,7 +24,8 @@ def max_consecutive_losses(pnl: pd.Series) -> int:
 
 def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
                     margin_reference: float = None, quantity: int = 1,
-                    initial_capital: float = None) -> dict:
+                    initial_capital: float = None,
+                    market_data: pd.DataFrame = None) -> dict:
     """回傳 {指標名: 值}，全部為 python 原生型別，方便顯示與匯出。"""
     m = {}
     if trades is None or trades.empty:
@@ -76,6 +77,27 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     m["最大連續虧損(次)"] = max_consecutive_losses(pnl)
     m["平均持倉K棒數"] = round(trades["holding_bars"].mean(), 1)
 
+    # v0.6.3：獲利保留與浮盈轉虧。
+    # 加權保留率 = 獲利交易實現點數合計 / 同批獲利交易最大順向浮盈點數合計。
+    if "max_favorable_points" in trades.columns:
+        mfe = pd.to_numeric(trades["max_favorable_points"], errors="coerce").fillna(0.0)
+        pnl_pts = pd.to_numeric(trades["pnl_points"], errors="coerce").fillna(0.0)
+        win_mask = pnl_pts > 0
+        valid_wins = win_mask & (mfe > 0)
+        if valid_wins.any():
+            weighted_retention = pnl_pts[valid_wins].sum() / mfe[valid_wins].sum() * 100
+            trade_retention = (pnl_pts[valid_wins] / mfe[valid_wins] * 100).clip(upper=100)
+            m["獲利交易加權保留率(%)"] = round(float(weighted_retention), 2)
+            m["獲利交易中位保留率(%)"] = round(float(trade_retention.median()), 2)
+        had_favorable_move = mfe > 0
+        turned_loss = had_favorable_move & (pnl_pts <= 0)
+        m["曾有浮盈交易筆數"] = int(had_favorable_move.sum())
+        m["浮盈轉虧筆數"] = int(turned_loss.sum())
+        if had_favorable_move.any():
+            m["浮盈轉虧率(%)"] = round(
+                float(turned_loss.sum() / had_favorable_move.sum() * 100), 2
+            )
+
     # v0.4.0：斷頭強制平倉統計。
     if "exit_reason" in trades.columns:
         mc = trades[trades["exit_reason"] == "margin_call"]
@@ -96,6 +118,27 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
         m["最大回撤(元)"] = round(dd.min(), 0)
         if base:
             m["最大回撤(%)"] = round(dd.min() / base * 100, 2)
+            capital_curve = base + eq
+            rolling_peak = capital_curve.cummax()
+            standard_dd_pct = ((capital_curve / rolling_peak) - 1.0) * 100
+            m["策略標準最大回撤率(%)"] = round(float(standard_dd_pct.min()), 2)
+
+        # v0.6.3：同期市場基準。以 MTX 連續契約收盤價計算期間漲跌與最大回撤，
+        # 再用「策略標準最大回撤率 / 市場最大回撤率」衡量回撤是否超出市場波動。
+        if market_data is not None and not market_data.empty and "close" in market_data.columns:
+            close = pd.to_numeric(market_data["close"], errors="coerce").dropna()
+            if len(close) >= 2 and float(close.iloc[0]) != 0:
+                market_return = (float(close.iloc[-1]) / float(close.iloc[0]) - 1.0) * 100
+                market_dd_pct = ((close / close.cummax()) - 1.0) * 100
+                market_max_dd = float(market_dd_pct.min())
+                m["市場期間漲跌幅(%)"] = round(market_return, 2)
+                m["市場最大回撤率(%)"] = round(market_max_dd, 2)
+                strategy_dd = m.get("策略標準最大回撤率(%)")
+                if strategy_dd is not None and abs(market_max_dd) > 1e-12:
+                    m["相對市場回撤倍數"] = round(abs(float(strategy_dd)) / abs(market_max_dd), 2)
+                if strategy_dd is not None and abs(market_return) > 1e-12:
+                    m["回撤相對市場漲跌幅倍數"] = round(abs(float(strategy_dd)) / abs(market_return), 2)
+
         # v0.4.6：報酬/最大回撤比（越高越好；主要排序指標）
         max_dd = abs(float(dd.min()))
         if max_dd > 0:

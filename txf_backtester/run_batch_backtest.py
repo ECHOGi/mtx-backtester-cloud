@@ -277,6 +277,13 @@ def compare_row(idx: int, name: str, metrics: dict) -> dict:
         "報酬回撤比": metrics.get("報酬回撤比", ""),
         "總損益(元)": metrics.get("總損益(元)", 0),
         "最大回撤(元)": metrics.get("最大回撤(元)", 0),
+        "策略標準最大回撤率(%)": metrics.get("策略標準最大回撤率(%)", ""),
+        "市場期間漲跌幅(%)": metrics.get("市場期間漲跌幅(%)", ""),
+        "市場最大回撤率(%)": metrics.get("市場最大回撤率(%)", ""),
+        "相對市場回撤倍數": metrics.get("相對市場回撤倍數", ""),
+        "獲利交易加權保留率(%)": metrics.get("獲利交易加權保留率(%)", ""),
+        "曾有浮盈交易筆數": metrics.get("曾有浮盈交易筆數", ""),
+        "浮盈轉虧率(%)": metrics.get("浮盈轉虧率(%)", ""),
         "獲利因子": metrics.get("獲利因子", ""),
         "期望值(元/筆)": metrics.get("期望值(元/筆)", ""),
         "交易次數": metrics.get("交易次數", 0),
@@ -473,6 +480,7 @@ def run_batch(args) -> Path:
             margin_reference=SYMBOLS["MTX"]["margin_reference"],
             quantity=cost.quantity,
             initial_capital=initial_capital,
+            market_data=data,
         )
         row = compare_row(idx, name, metrics)
         rows.append(row)
