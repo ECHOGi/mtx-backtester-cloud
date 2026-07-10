@@ -2214,10 +2214,29 @@ if mobile_mode:
     </div>
     """, unsafe_allow_html=True)
     mq1, mq2 = st.columns(2)
-    if mq1.button("▶ 開始雲端批次回測", type="primary", use_container_width=True, key="mobile_cloud_validation_btn"):
+    if mq1.button(
+        "▶ 開始雲端批次回測",
+        type="primary",
+        use_container_width=True,
+        key="mobile_cloud_validation_btn",
+        disabled=not bool(selected_cloud_file),
+    ):
         try:
-            raw, loaded_from, _ = load_cloud_or_bundled_batch_json(st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL), show_message=True)
-            set_batch_json_and_queue(raw, loaded_from, "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
+            # 手機版必須與桌機版共用目前在雲端策略投放箱選取的檔案；
+            # 不再讀取寫死的 DEFAULT_CLOUD_BATCH_JSON_URL，也不回退內建 batch_009。
+            raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
+            loaded_from = (
+                "gdrive:"
+                + selected_cloud_file["id"]
+                + ":"
+                + selected_cloud_file.get("modifiedTime", "")
+            )
+            set_batch_json_and_queue(
+                raw,
+                loaded_from,
+                "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情",
+                selected_cloud_file.get("name", ""),
+            )
         except Exception as e:  # noqa: BLE001
             st.error(f"手機快速批次讀取失敗：{e}")
     loaded_strategy_name = st.session_state.get("batch_loaded_display_name", "尚未載入策略檔")
