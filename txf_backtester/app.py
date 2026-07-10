@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.5.8 OAuth 雲端閉環模式）。
+app.py - 台指期回測工具 Streamlit 介面（v0.6.1 手機批次操作修正版）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -770,11 +770,35 @@ def load_cloud_or_bundled_batch_json(cloud_url: str, show_message: bool = True) 
         return raw, "bundled:" + BUNDLED_BATCH_009_FILENAME, msg
 
 
-def set_batch_json_and_queue(raw: str, loaded_from: str, mode_label: str) -> None:
-    """設定批次 JSON 文字並排程回測。"""
+def _infer_batch_display_name(raw: str, loaded_from: str = "") -> str:
+    """取得手機介面要顯示的策略檔名稱。"""
+    source = str(loaded_from or "")
+    if source.startswith("bundled:"):
+        return source.split(":", 1)[1] or BUNDLED_BATCH_009_FILENAME
+    if source.startswith("mobile_upload:"):
+        return source.split(":", 1)[1]
+    if source.startswith("cloud:"):
+        parsed = urllib.parse.urlparse(source.split(":", 1)[1])
+        name = os.path.basename(parsed.path)
+        if name.lower().endswith(".json"):
+            return name
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            batch_name = str(obj.get("batch_name") or obj.get("name") or "").strip()
+            if batch_name:
+                return batch_name if batch_name.lower().endswith(".json") else batch_name + ".json"
+    except Exception:
+        pass
+    return "已載入策略 JSON"
+
+
+def set_batch_json_and_queue(raw: str, loaded_from: str, mode_label: str, display_name: str = "") -> None:
+    """設定批次 JSON 文字、記錄顯示名稱並排程回測。"""
     json.loads(raw)
     st.session_state["batch_strategy_json_text"] = raw
     st.session_state["batch_loaded_file"] = loaded_from
+    st.session_state["batch_loaded_display_name"] = display_name or _infer_batch_display_name(raw, loaded_from)
     queue_batch_mode(mode_label)
 
 
@@ -1365,7 +1389,7 @@ with st.sidebar:
             try:
                 raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
                 loaded_from = "gdrive:" + selected_cloud_file["id"] + ":" + selected_cloud_file.get("modifiedTime", "")
-                set_batch_json_and_queue(raw, loaded_from, cloud_mode)
+                set_batch_json_and_queue(raw, loaded_from, cloud_mode, selected_cloud_file.get("name", ""))
             except Exception as e:  # noqa: BLE001
                 st.error(f"批次策略讀取失敗：{e}")
 
@@ -1415,7 +1439,7 @@ with st.sidebar:
                 if st.button("▶ 開始本機投放箱批次回測", use_container_width=True, type="secondary"):
                     try:
                         raw = load_batch_json_from_dropbox(files[pick]["path"])
-                        set_batch_json_and_queue(raw, files[pick]["path"] + str(files[pick]["mtime"]), dropbox_mode)
+                        set_batch_json_and_queue(raw, files[pick]["path"] + str(files[pick]["mtime"]), dropbox_mode, files[pick]["name"])
                     except Exception as e:  # noqa: BLE001
                         st.error(f"讀取投放箱策略 JSON 失敗：{e}")
             else:
@@ -1433,6 +1457,7 @@ with st.sidebar:
                 raw = raw.decode("utf-8")
             st.session_state["batch_strategy_json_text"] = raw
             st.session_state["batch_loaded_file"] = batch_key
+            st.session_state["batch_loaded_display_name"] = batch_up.name
             st.session_state.pop("batch_bt", None)
         manual_ready = True
         st.success(f"已載入手動 JSON：{batch_up.name}")
@@ -2189,18 +2214,22 @@ if mobile_mode:
     </div>
     """, unsafe_allow_html=True)
     mq1, mq2 = st.columns(2)
-    if mq1.button("▶ 雲端前後期對照", type="primary", use_container_width=True, key="mobile_cloud_validation_btn"):
+    if mq1.button("▶ 開始雲端批次回測", type="primary", use_container_width=True, key="mobile_cloud_validation_btn"):
         try:
             raw, loaded_from, _ = load_cloud_or_bundled_batch_json(st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL), show_message=True)
             set_batch_json_and_queue(raw, loaded_from, "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
         except Exception as e:  # noqa: BLE001
             st.error(f"手機快速批次讀取失敗：{e}")
-    if mq2.button("▶ 內建 batch_009", use_container_width=True, key="mobile_bundled_validation_btn"):
-        try:
-            raw = load_bundled_batch_009_json()
-            set_batch_json_and_queue(raw, "bundled:" + BUNDLED_BATCH_009_FILENAME, "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"內建策略讀取失敗：{e}")
+    loaded_strategy_name = st.session_state.get("batch_loaded_display_name", "尚未載入策略檔")
+    with mq2:
+        st.markdown(
+            f"""<div style="height:2.65rem;display:flex;align-items:center;justify-content:center;
+            padding:0 .65rem;border:1px solid #c6d1dc;border-radius:.5rem;background:#fff;
+            color:#243447;font-weight:600;text-align:center;overflow:hidden;white-space:nowrap;
+            text-overflow:ellipsis;" title="{loaded_strategy_name}">
+            📄 {loaded_strategy_name}</div>""",
+            unsafe_allow_html=True,
+        )
     with st.expander("手機上傳策略 JSON", expanded=False):
         mobile_up = st.file_uploader("上傳策略 JSON 後直接跑前後期行情對照", type=["json"], key="mobile_batch_json_uploader")
         if mobile_up is not None and st.button("▶ 跑上傳策略", use_container_width=True, key="mobile_uploaded_run_btn"):
@@ -2208,7 +2237,7 @@ if mobile_mode:
                 raw = mobile_up.read()
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8-sig")
-                set_batch_json_and_queue(raw, "mobile_upload:" + mobile_up.name + str(mobile_up.size), "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
+                set_batch_json_and_queue(raw, "mobile_upload:" + mobile_up.name + str(mobile_up.size), "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情", mobile_up.name)
             except Exception as e:  # noqa: BLE001
                 st.error(f"手機上傳策略讀取失敗：{e}")
 
