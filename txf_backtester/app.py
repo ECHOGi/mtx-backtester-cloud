@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.5.4 雲端作業模式／手機精簡介面）。
+app.py - 台指期回測工具 Streamlit 介面（v0.5.5 雲端作業模式／Google Drive 自動上傳）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -555,10 +555,15 @@ STRATEGY_DROPBOX_DIR = os.path.join(DEFAULT_RECORD_DIR, "_策略投放箱")
 # v0.5.2：新電腦預設使用雲端策略連結，不再依賴 Google Drive 桌面版同步資料夾。
 # v0.5.3：Google Drive 若回傳 HTML 分享頁，會自動改用內建 batch_009，不中斷測試。
 # v0.5.4：雲端作業模式預設不依賴本機 Google Drive；結果以下載 ZIP／複製總覽文字為主。
+# v0.5.5：雲端作業模式優先自動上傳回測結果到 Google Drive。
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CLOUD_BATCH_JSON_URL = "https://drive.google.com/file/d/1aLnJSRQJ1HW1_7GgR32VXzCtexmSsd_A/view?usp=drivesdk"
 BUNDLED_BATCH_009_FILENAME = "batch_009_獲利放大同步放大出場條件診斷.json"
 BUNDLED_BATCH_009_PATH = os.path.join(APP_DIR, "bundled_strategies", BUNDLED_BATCH_009_FILENAME)
+
+# v0.5.5：Streamlit 雲端部署時，程式從 repo 根目錄啟動；app.py 位於 txf_backtester/。
+# 因此資料預設要優先指向 txf_backtester/data，才能讀到 txf_backtester/data/prepared/*.csv。
+DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"  # MTX Test Record / _批次回測結果
 
 
 def prepared_mtx_path(folder: str) -> str:
@@ -569,6 +574,27 @@ def prepared_mtx_path(folder: str) -> str:
 def has_prepared_mtx(folder: str) -> bool:
     """是否已建立 MTX prepared 預設日K檔。"""
     return os.path.exists(prepared_mtx_path(folder))
+
+
+def detect_default_data_folder() -> str:
+    """自動偵測資料路徑，避免本機與 Streamlit Cloud 路徑不同。"""
+    candidates = [
+        "txf_backtester/data",  # Streamlit Community Cloud：main file path = txf_backtester/app.py
+        "data",                 # 本機在 txf_backtester 內啟動
+        os.path.join(APP_DIR, "data"),
+        "txf_backtester/data/prepared",  # 備援：使用者曾手動指定此層
+        "data/prepared",
+    ]
+    for c in candidates:
+        if has_prepared_mtx(c):
+            return c
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return "txf_backtester/data"
+
+
+DEFAULT_DATA_FOLDER = detect_default_data_folder()
 
 
 def calculate_mtx_safety_settings(cont: pd.DataFrame, end_date, point_value: float) -> dict:
@@ -749,6 +775,65 @@ def set_batch_json_and_queue(raw: str, loaded_from: str, mode_label: str) -> Non
     st.session_state["batch_strategy_json_text"] = raw
     st.session_state["batch_loaded_file"] = loaded_from
     queue_batch_mode(mode_label)
+
+
+def _st_secret_get(key: str, default=None):
+    """安全讀取 Streamlit secrets；本機沒有 secrets.toml 時不報錯。"""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def get_gdrive_service_account_info():
+    """讀取 Google Drive 自動上傳用 service account 設定。
+
+    支援兩種 Streamlit Secrets：
+    1) [gcp_service_account] 區塊：直接貼 service account JSON 的各欄位。
+    2) GDRIVE_SERVICE_ACCOUNT_JSON：一整段 JSON 字串。
+    """
+    try:
+        if "gcp_service_account" in st.secrets:
+            return dict(st.secrets["gcp_service_account"])
+    except Exception:  # noqa: BLE001
+        pass
+    raw = _st_secret_get("GDRIVE_SERVICE_ACCOUNT_JSON", "") or os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON", "")
+    if raw:
+        return json.loads(raw)
+    return None
+
+
+def get_gdrive_results_parent_folder_id() -> str:
+    return (
+        _st_secret_get("GDRIVE_RESULTS_PARENT_FOLDER_ID", "")
+        or os.environ.get("GDRIVE_RESULTS_PARENT_FOLDER_ID", "")
+        or DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID
+    )
+
+
+def upload_result_zip_to_google_drive(zip_bytes: bytes, zip_name: str, result_folder_name: str) -> tuple[str, str]:
+    """將回測 ZIP 與解壓後內容自動上傳到 Google Drive。
+
+    回傳：(folder_url, error_message)。未設定 secrets 時不視為程式錯誤，而是回傳提示文字。
+    """
+    service_account_info = get_gdrive_service_account_info()
+    if not service_account_info:
+        return "", "尚未設定 Streamlit Secrets：gcp_service_account 或 GDRIVE_SERVICE_ACCOUNT_JSON。"
+    parent_id = get_gdrive_results_parent_folder_id()
+    if not parent_id:
+        return "", "尚未設定 Google Drive 目標資料夾 ID。"
+    try:
+        from google_drive_uploader import upload_zip_result_to_drive
+        result = upload_zip_result_to_drive(
+            service_account_info=service_account_info,
+            parent_folder_id=parent_id,
+            result_folder_name=result_folder_name,
+            zip_name=zip_name,
+            zip_bytes=zip_bytes,
+        )
+        return result.get("folder_url", ""), ""
+    except Exception as e:  # noqa: BLE001
+        return "", str(e)
 
 
 def _load_prepared_mtx(folder: str) -> tuple:
@@ -1079,7 +1164,7 @@ with st.sidebar:
         index=0,
         key="w_work_mode",
         horizontal=True,
-        help="雲端作業模式：不依賴本機 Google Drive 路徑，結果以下載 ZIP／複製總覽文字為主。",
+        help="雲端作業模式：不依賴本機 Google Drive 路徑；若已設定 Google Drive API，回測完成會自動上傳結果。",
     )
     cloud_operation_mode = (work_mode == "雲端作業模式")
     layout_mode = st.radio(
@@ -1118,8 +1203,8 @@ with st.sidebar:
 
     # 5. 資料設定
     st.markdown("### 資料設定")
-    folder = st.text_input("CSV 資料夾路徑", value="data",
-                           help="請把 2015_fut.csv 到 2025_fut.csv 放在專案內的 data 資料夾。")
+    folder = st.text_input("CSV 資料夾路徑", value=DEFAULT_DATA_FOLDER,
+                           help="雲端預設會自動指向 txf_backtester/data；本機則通常是 data。")
     symbol = st.selectbox("商品", list(SYMBOLS.keys()),
                           index=list(SYMBOLS.keys()).index(DEFAULT_SYMBOL),
                           format_func=lambda s: f"{s} {SYMBOLS[s]['name']}")
@@ -1137,7 +1222,7 @@ with st.sidebar:
     if symbol == "MTX" and has_prepared_mtx(folder):
         session_label, method_label = "一般盤", "穩定換倉（預設）"
         n_confirm, exclude_weekly = 3, True
-        st.success("已偵測到 MTX prepared 回測資料，本版將直接讀取 data/prepared/MTX_stable_rollover_daily.csv。")
+        st.success(f"已偵測到 MTX prepared 回測資料，本版將直接讀取：{prepared_mtx_path(folder)}")
 
     # 4.（補填）成本與資金預設值；實際顯示在資料日期確定後補入 cost_box。
     spec = SYMBOLS[symbol]
@@ -1994,7 +2079,7 @@ if mobile_mode:
     st.markdown("""
     <div class="mobile-quick-card">
       <b>📱 手機快速操作</b><br>
-      建議手機先使用「雲端策略／內建策略」跑前後期行情對照，完成後下載 ZIP 或複製總覽文字。
+      建議手機先使用「雲端策略／內建策略」跑前後期行情對照；若已設定 Google Drive API，結果會自動上傳。
     </div>
     """, unsafe_allow_html=True)
     mq1, mq2 = st.columns(2)
@@ -2042,7 +2127,10 @@ if sample_validation_bt is not None:
     if st.session_state.get("sample_validation_saved_hash") != sample_validation_bt["hash"]:
         validation_zip_name = build_sample_validation_zip_filename(sample_validation_bt)
         if cloud_operation_mode:
-            validation_saved_path, validation_save_error = "", "雲端作業模式不自動寫入本機資料夾"
+            validation_folder_name = os.path.splitext(_safe_filename_part(validation_zip_name))[0]
+            validation_saved_path, validation_save_error = upload_result_zip_to_google_drive(
+                validation_zip_bytes, validation_zip_name, validation_folder_name
+            )
         else:
             validation_saved_path, validation_save_error = save_batch_to_obsidian(sample_validation_bt, validation_zip_bytes, validation_zip_name)
         st.session_state["sample_validation_saved_hash"] = sample_validation_bt["hash"]
@@ -2054,11 +2142,11 @@ if sample_validation_bt is not None:
         validation_saved_path = st.session_state.get("sample_validation_saved_path", "")
         validation_save_error = st.session_state.get("sample_validation_save_error", "")
     if validation_saved_path:
-        st.success(f"已自動建立 Obsidian 前後期行情對照資料夾：{validation_saved_path}")
+        st.success(f"已自動上傳前後期行情對照結果到 Google Drive：{validation_saved_path}" if cloud_operation_mode else f"已自動建立 Obsidian 前後期行情對照資料夾：{validation_saved_path}")
     elif validation_save_error and not cloud_operation_mode:
         st.warning(f"前後期行情對照 ZIP 下載按鈕仍可使用，但自動保存到 {DEFAULT_RECORD_DIR} 失敗：{validation_save_error}")
     elif cloud_operation_mode:
-        st.info("雲端作業模式：結果不寫入本機 Google Drive；請使用下載 ZIP 或複製總覽文字。")
+        st.warning(f"雲端作業模式：Google Drive 自動上傳尚未完成，原因：{validation_save_error}")
     validation_overview_text = build_sample_validation_overview_md(
         sample_validation_bt, os.path.splitext(_safe_filename_part(validation_zip_name))[0]
     )
@@ -2075,7 +2163,10 @@ if batch_bt is not None:
     if st.session_state.get("batch_saved_hash") != batch_bt["hash"]:
         batch_zip_name = build_batch_zip_filename(batch_bt)
         if cloud_operation_mode:
-            batch_saved_path, batch_save_error = "", "雲端作業模式不自動寫入本機資料夾"
+            batch_folder_name = os.path.splitext(_safe_filename_part(batch_zip_name))[0]
+            batch_saved_path, batch_save_error = upload_result_zip_to_google_drive(
+                batch_zip_bytes, batch_zip_name, batch_folder_name
+            )
         else:
             batch_saved_path, batch_save_error = save_batch_to_obsidian(batch_bt, batch_zip_bytes, batch_zip_name)
         st.session_state["batch_saved_hash"] = batch_bt["hash"]
@@ -2087,11 +2178,11 @@ if batch_bt is not None:
         batch_saved_path = st.session_state.get("batch_saved_path", "")
         batch_save_error = st.session_state.get("batch_save_error", "")
     if batch_saved_path:
-        st.success(f"已自動建立 Obsidian 批次回測資料夾：{batch_saved_path}")
+        st.success(f"已自動上傳批次回測結果到 Google Drive：{batch_saved_path}" if cloud_operation_mode else f"已自動建立 Obsidian 批次回測資料夾：{batch_saved_path}")
     elif batch_save_error and not cloud_operation_mode:
         st.warning(f"批次回測 ZIP 下載按鈕仍可使用，但自動保存到 {DEFAULT_RECORD_DIR} 失敗：{batch_save_error}")
     elif cloud_operation_mode:
-        st.info("雲端作業模式：結果不寫入本機 Google Drive；請使用下載 ZIP 或複製總覽文字。")
+        st.warning(f"雲端作業模式：Google Drive 自動上傳尚未完成，原因：{batch_save_error}")
     batch_overview_text = build_batch_overview_md(batch_bt, os.path.splitext(_safe_filename_part(batch_zip_name))[0])
     with st.expander("複製給 AI 的批次回測總覽", expanded=mobile_mode):
         st.text_area("總覽 Markdown", batch_overview_text, height=(260 if mobile_mode else 360), key="batch_overview_copy")
@@ -2656,7 +2747,12 @@ ai_pack_bytes = build_ai_pack()
 # v0.3.9：每次新的回測結果只自動建立一次 Obsidian 紀錄資料夾，避免畫面重整時重複產生檔案。
 if st.session_state.get("ai_pack_saved_hash") != bt["hash"]:
     ai_pack_file_name = build_ai_pack_filename()
-    saved_path, save_error = save_ai_pack_to_record_folder(ai_pack_bytes, ai_pack_file_name)
+    if cloud_operation_mode:
+        saved_path, save_error = upload_result_zip_to_google_drive(
+            ai_pack_bytes, ai_pack_file_name, build_obsidian_record_folder_name(ai_pack_file_name)
+        )
+    else:
+        saved_path, save_error = save_ai_pack_to_record_folder(ai_pack_bytes, ai_pack_file_name)
     st.session_state["ai_pack_saved_hash"] = bt["hash"]
     st.session_state["ai_pack_file_name"] = ai_pack_file_name
     st.session_state["ai_pack_saved_path"] = saved_path
@@ -2667,9 +2763,9 @@ else:
     save_error = st.session_state.get("ai_pack_save_error", "")
 
 if saved_path:
-    st.success(f"已自動建立 Obsidian 回測紀錄資料夾：{saved_path}")
+    st.success(f"已自動上傳單次回測結果到 Google Drive：{saved_path}" if cloud_operation_mode else f"已自動建立 Obsidian 回測紀錄資料夾：{saved_path}")
 elif save_error:
-    st.warning(f"AI 分析包下載按鈕仍可使用，但自動建立 Obsidian 回測紀錄到 {DEFAULT_RECORD_DIR} 失敗：{save_error}")
+    st.warning((f"Google Drive 自動上傳尚未完成，原因：{save_error}" if cloud_operation_mode else f"AI 分析包下載按鈕仍可使用，但自動建立 Obsidian 回測紀錄到 {DEFAULT_RECORD_DIR} 失敗：{save_error}"))
 
 e1, e2, e3, e4, e5, e6 = st.columns(6)
 e1.download_button("交易明細 CSV", df_to_csv_bytes(trades_zh),
