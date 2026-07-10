@@ -1369,7 +1369,8 @@ with st.sidebar:
             except Exception as e:  # noqa: BLE001
                 st.error(f"批次策略讀取失敗：{e}")
 
-        with st.expander("手動雲端連結（備用）", expanded=False):
+        with st.container():
+            st.markdown("##### 手動雲端連結（備用）")
             cloud_url = st.text_input(
                 "雲端策略 JSON 連結",
                 value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
