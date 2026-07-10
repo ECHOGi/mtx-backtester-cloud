@@ -1,0 +1,151 @@
+# -*- coding: utf-8 -*-
+"""
+metrics.py - 回測績效統計。
+
+v0.3.2：新增顯示層指標（不影響回測核心）：
+- 總報酬率(%)、年化報酬率(%)、最大回撤(%)：以「初始資金」為分母
+  （initial_capital，預設 = 一口原始保證金 margin_reference * 口數）
+- 期望值(元/筆)：每筆交易平均損益
+- 獲利因子：總獲利 ÷ 總虧損，越高越好
+舊指標鍵名全部保留，相容既有匯出與報告。
+"""
+import numpy as np
+import pandas as pd
+
+
+def max_consecutive_losses(pnl: pd.Series) -> int:
+    """最大連續虧損次數。"""
+    worst = cur = 0
+    for x in pnl:
+        cur = cur + 1 if x < 0 else 0
+        worst = max(worst, cur)
+    return worst
+
+
+def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
+                    margin_reference: float = None, quantity: int = 1,
+                    initial_capital: float = None) -> dict:
+    """回傳 {指標名: 值}，全部為 python 原生型別，方便顯示與匯出。"""
+    m = {}
+    if trades is None or trades.empty:
+        return {
+            "交易次數": 0,
+            "是否曾發生斷頭": "否",
+            "斷頭次數": 0,
+            "第一次斷頭日期": "無",
+            "歷史最低所需安全資金": "無交易",
+            "訊息": "此參數組合沒有產生任何交易",
+        }
+
+    pnl = trades["pnl_amount"].astype(float)
+    pts = trades["pnl_points"].astype(float)
+    wins, losses = pnl[pnl > 0], pnl[pnl <= 0]
+
+    # 初始資金：優先用傳入值，否則用保證金參考值*口數
+    base = initial_capital
+    if base is None and margin_reference:
+        base = margin_reference * quantity
+
+    m["總損益(元)"] = round(pnl.sum(), 0)
+    m["總損益(點)"] = round(pts.sum(), 1)
+    if base:
+        m["總報酬率(%)"] = round(pnl.sum() / base * 100, 2)
+        # 年化報酬率：以回測期間日曆天數換算 CAGR
+        if equity is not None and not equity.empty:
+            d0 = pd.to_datetime(equity["datetime"].iloc[0])
+            d1 = pd.to_datetime(equity["datetime"].iloc[-1])
+            days = max((d1 - d0).days, 1)
+            ratio = (base + pnl.sum()) / base
+            if ratio > 0:
+                m["年化報酬率(%)"] = round((ratio ** (365.25 / days) - 1) * 100, 2)
+            else:
+                m["年化報酬率(%)"] = None  # 資金已虧損殆盡，無法年化
+    m["交易次數"] = int(len(trades))
+    m["獲利次數"] = int(len(wins))
+    m["虧損次數"] = int(len(losses))
+    m["勝率(%)"] = round(len(wins) / len(trades) * 100, 2)
+    m["平均損益(元)"] = round(pnl.mean(), 1)
+    m["期望值(元/筆)"] = round(pnl.mean(), 1)
+    m["平均獲利(元)"] = round(wins.mean(), 1) if len(wins) else 0.0
+    m["平均虧損(元)"] = round(losses.mean(), 1) if len(losses) else 0.0
+    gross_loss = abs(losses.sum())
+    m["獲利因子"] = (round(wins.sum() / gross_loss, 2)
+                    if gross_loss > 0 else float("inf"))
+    m["最大獲利(元)"] = round(pnl.max(), 0)
+    m["最大虧損(元)"] = round(pnl.min(), 0)
+    m["最大連續虧損(次)"] = max_consecutive_losses(pnl)
+    m["平均持倉K棒數"] = round(trades["holding_bars"].mean(), 1)
+
+    # v0.4.0：斷頭強制平倉統計。
+    if "exit_reason" in trades.columns:
+        mc = trades[trades["exit_reason"] == "margin_call"]
+        m["是否曾發生斷頭"] = "是" if len(mc) else "否"
+        m["斷頭次數"] = int(len(mc))
+        if len(mc) and "exit_date" in mc.columns:
+            first_dt = pd.to_datetime(mc["exit_date"]).min()
+            m["第一次斷頭日期"] = first_dt.strftime("%Y-%m-%d")
+        else:
+            m["第一次斷頭日期"] = "無"
+    if "required_safety_capital" in trades.columns:
+        m["歷史最低所需安全資金"] = float(round(trades["required_safety_capital"].astype(float).max(), 0))
+
+    # 最大回撤（權益曲線：已實現+未實現）
+    if equity is not None and not equity.empty:
+        eq = equity["equity"].astype(float)
+        dd = eq - eq.cummax()
+        m["最大回撤(元)"] = round(dd.min(), 0)
+        if base:
+            m["最大回撤(%)"] = round(dd.min() / base * 100, 2)
+        # v0.4.6：報酬/最大回撤比（越高越好；主要排序指標）
+        max_dd = abs(float(dd.min()))
+        if max_dd > 0:
+            m["報酬回撤比"] = round(pnl.sum() / max_dd, 2)
+        else:
+            m["報酬回撤比"] = float("inf") if pnl.sum() > 0 else 0.0
+        # v0.4.7：資金持續未創新高交易天數（權益創高到回到新高的最長間隔）
+        is_peak = eq >= eq.cummax()
+        longest = cur = 0
+        for flag in is_peak:
+            cur = 0 if flag else cur + 1
+            longest = max(longest, cur)
+        m["資金持續未創新高交易天數"] = int(longest)
+    return m
+
+
+def yearly_stats(trades: pd.DataFrame, equity: pd.DataFrame) -> pd.DataFrame:
+    """v0.4.6：年度分解統計。
+
+    以「出場日」歸屬年度計算每年損益/交易次數/勝率；
+    以權益曲線計算「年度內最大回撤」（每年年初重設高點）。
+    回傳欄位：年度, 損益(元), 交易次數, 勝率(%), 年度內最大回撤(元)
+    """
+    if trades is None or trades.empty:
+        return pd.DataFrame(columns=["年度", "損益(元)", "交易次數",
+                                     "勝率(%)", "年度內最大回撤(元)"])
+    t = trades.copy()
+    t["_year"] = pd.to_datetime(t["exit_date"]).dt.year
+    rows = []
+    dd_by_year = {}
+    if equity is not None and not equity.empty:
+        eq2 = equity.copy()
+        eq2["_year"] = pd.to_datetime(eq2["datetime"]).dt.year
+        for y, g in eq2.groupby("_year"):
+            e = g["equity"].astype(float)
+            dd_by_year[int(y)] = round(float((e - e.cummax()).min()), 0)
+    for y, g in t.groupby("_year"):
+        pnl_y = g["pnl_amount"].astype(float)
+        wins = int((pnl_y > 0).sum())
+        rows.append({
+            "年度": int(y),
+            "損益(元)": round(pnl_y.sum(), 0),
+            "交易次數": int(len(g)),
+            "勝率(%)": round(wins / len(g) * 100, 1),
+            "年度內最大回撤(元)": dd_by_year.get(int(y), ""),
+        })
+    return pd.DataFrame(rows).sort_values("年度").reset_index(drop=True)
+
+
+def metrics_to_df(m: dict) -> pd.DataFrame:
+    """轉成兩欄表格，方便顯示與匯出 CSV。"""
+    return pd.DataFrame({"指標": list(m.keys()),
+                         "數值": [str(v) for v in m.values()]})
