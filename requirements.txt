@@ -1,4 +1,4 @@
-# v0.5.6 Streamlit Cloud stable pins
+# v0.5.7 Streamlit Cloud stable pins
 # Avoid latest floating releases causing Segmentation fault on Streamlit Cloud.
 streamlit==1.37.1
 pandas==2.2.3

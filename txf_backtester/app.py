@@ -1110,9 +1110,9 @@ def strategy_dialog():
 
     st.markdown("---")
     b1, b2 = st.columns([2.5, 1])
-    run = b1.button("▶ 開始回測", type="primary", width="stretch",
+    run = b1.button("▶ 開始回測", type="primary", use_container_width=True,
                     key="dlg_run_flag")
-    cancel = b2.button("取消", width="stretch", key="dlg_cancel_flag")
+    cancel = b2.button("取消", use_container_width=True, key="dlg_cancel_flag")
 
     # 面板內提交（真實執行時 dialog 為 fragment，會走這裡）
     if run:
@@ -1152,7 +1152,7 @@ with st.sidebar:
     st.markdown("## 台指期回測工具")
 
     # 1. 策略設定面板
-    if st.button("🎮 策略設定面板", type="primary", width="stretch",
+    if st.button("🎮 策略設定面板", type="primary", use_container_width=True,
                  help="設定進場條件、出場條件與參數，按「開始回測」才會執行"):
         strategy_dialog()
 
@@ -1180,7 +1180,7 @@ with st.sidebar:
                        horizontal=True,
                        help="概略模式：成本與資金用預設值。細節模式：可逐項調整。")
     simple_mode = (ui_mode == "概略模式")
-    st.button("恢復預設值", on_click=reset_defaults, width="stretch")
+    st.button("恢復預設值", on_click=reset_defaults, use_container_width=True)
 
     # 3. 圖表顯示設定
     st.markdown("### 圖表顯示設定")
@@ -1271,7 +1271,7 @@ with st.sidebar:
             key="batch_cloud_mode",
             help="前後期行情對照會自動跑兩段並產生對照表；其餘模式只跑單一期間。",
         )
-        if st.button("▶ 開始雲端批次回測", width="stretch", type="primary"):
+        if st.button("▶ 開始雲端批次回測", use_container_width=True, type="primary"):
             try:
                 raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
                 set_batch_json_and_queue(raw, loaded_from, cloud_mode)
@@ -1306,7 +1306,7 @@ with st.sidebar:
                     key="batch_dropbox_mode",
                     help="前後期行情對照會自動跑兩段並產生對照表；其餘模式只跑單一期間。",
                 )
-                if st.button("▶ 開始本機投放箱批次回測", width="stretch", type="secondary"):
+                if st.button("▶ 開始本機投放箱批次回測", use_container_width=True, type="secondary"):
                     try:
                         raw = load_batch_json_from_dropbox(files[pick]["path"])
                         set_batch_json_and_queue(raw, files[pick]["path"] + str(files[pick]["mtime"]), dropbox_mode)
@@ -1343,7 +1343,7 @@ with st.sidebar:
         key="batch_manual_mode",
         disabled=not manual_ready,
     )
-    if st.button("▶ 開始手動批次回測", width="stretch", type=("primary" if manual_ready else "secondary"), disabled=not manual_ready):
+    if st.button("▶ 開始手動批次回測", use_container_width=True, type=("primary" if manual_ready else "secondary"), disabled=not manual_ready):
         queue_batch_mode(manual_mode)
     st.caption("選擇一種模式後按「開始批次回測」。前後期行情對照會自動比較 2015～2023 與 2024～資料末日。")
 
@@ -2067,9 +2067,9 @@ st.markdown('<div class="strategy-banner">目前內建可選用策略：'
             '進出場條件可在「策略設定面板」自由組合）</div>', unsafe_allow_html=True)
 
 bc1, bc2, bc3 = st.columns([1.2, 1.2, 2.6])
-if bc1.button("🎮 策略設定面板 ", type="primary", width="stretch"):
+if bc1.button("🎮 策略設定面板 ", type="primary", use_container_width=True):
     strategy_dialog()
-main_run = bc2.button("▶ 開始回測", type="primary", width="stretch",
+main_run = bc2.button("▶ 開始回測", type="primary", use_container_width=True,
                       help="以目前的策略與資料設定執行回測")
 with bc3:
     st.caption("先在「策略設定面板」勾選進出場條件，再按「開始回測」。"
@@ -2083,13 +2083,13 @@ if mobile_mode:
     </div>
     """, unsafe_allow_html=True)
     mq1, mq2 = st.columns(2)
-    if mq1.button("▶ 雲端前後期對照", type="primary", width="stretch", key="mobile_cloud_validation_btn"):
+    if mq1.button("▶ 雲端前後期對照", type="primary", use_container_width=True, key="mobile_cloud_validation_btn"):
         try:
             raw, loaded_from, _ = load_cloud_or_bundled_batch_json(st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL), show_message=True)
             set_batch_json_and_queue(raw, loaded_from, "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
         except Exception as e:  # noqa: BLE001
             st.error(f"手機快速批次讀取失敗：{e}")
-    if mq2.button("▶ 內建 batch_009", width="stretch", key="mobile_bundled_validation_btn"):
+    if mq2.button("▶ 內建 batch_009", use_container_width=True, key="mobile_bundled_validation_btn"):
         try:
             raw = load_bundled_batch_009_json()
             set_batch_json_and_queue(raw, "bundled:" + BUNDLED_BATCH_009_FILENAME, "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情")
@@ -2097,7 +2097,7 @@ if mobile_mode:
             st.error(f"內建策略讀取失敗：{e}")
     with st.expander("手機上傳策略 JSON", expanded=False):
         mobile_up = st.file_uploader("上傳策略 JSON 後直接跑前後期行情對照", type=["json"], key="mobile_batch_json_uploader")
-        if mobile_up is not None and st.button("▶ 跑上傳策略", width="stretch", key="mobile_uploaded_run_btn"):
+        if mobile_up is not None and st.button("▶ 跑上傳策略", use_container_width=True, key="mobile_uploaded_run_btn"):
             try:
                 raw = mobile_up.read()
                 if isinstance(raw, bytes):
@@ -2122,7 +2122,7 @@ sample_validation_bt = st.session_state.get("sample_validation_bt")
 if sample_validation_bt is not None:
     st.markdown("## 前後期行情對照結果")
     st.caption(f"前期行情：{sample_validation_bt['in_start']} ～ {sample_validation_bt['in_end']}｜後期牛市：{sample_validation_bt['out_start']} ～ {sample_validation_bt['out_end']}")
-    st.dataframe(sample_validation_bt["compare"], hide_index=True, width="stretch")
+    st.dataframe(sample_validation_bt["compare"], hide_index=True, use_container_width=True)
     validation_zip_bytes = build_sample_validation_zip_bytes(sample_validation_bt)
     if st.session_state.get("sample_validation_saved_hash") != sample_validation_bt["hash"]:
         validation_zip_name = build_sample_validation_zip_filename(sample_validation_bt)
@@ -2153,12 +2153,12 @@ if sample_validation_bt is not None:
     with st.expander("複製給 AI 的前後期行情對照總覽", expanded=mobile_mode):
         st.text_area("總覽 Markdown", validation_overview_text, height=(260 if mobile_mode else 360), key="validation_overview_copy")
     st.download_button("下載前後期行情對照 ZIP", validation_zip_bytes,
-                       file_name=validation_zip_name, width="stretch")
+                       file_name=validation_zip_name, use_container_width=True)
 
 batch_bt = st.session_state.get("batch_bt")
 if batch_bt is not None:
     st.markdown("## 批次回測結果")
-    st.dataframe(batch_bt["compare"], hide_index=True, width="stretch")
+    st.dataframe(batch_bt["compare"], hide_index=True, use_container_width=True)
     batch_zip_bytes = build_batch_zip_bytes(batch_bt)
     if st.session_state.get("batch_saved_hash") != batch_bt["hash"]:
         batch_zip_name = build_batch_zip_filename(batch_bt)
@@ -2187,7 +2187,7 @@ if batch_bt is not None:
     with st.expander("複製給 AI 的批次回測總覽", expanded=mobile_mode):
         st.text_area("總覽 Markdown", batch_overview_text, height=(260 if mobile_mode else 360), key="batch_overview_copy")
     st.download_button("下載批次回測 ZIP", batch_zip_bytes,
-                       file_name=batch_zip_name, width="stretch", type="primary")
+                       file_name=batch_zip_name, use_container_width=True, type="primary")
     st.caption("批次回測不會改變目前單次回測結果；每組策略交易邏輯仍沿用既有 backtester。")
 
 bt = st.session_state.get("bt")
@@ -2388,7 +2388,7 @@ with col_main:
                       plot_bgcolor="#f7fafc", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", y=1.02, font=dict(size=10)),
                       dragmode="pan", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, width="stretch",
+    st.plotly_chart(fig, use_container_width=True,
                     config={"scrollZoom": True, "displaylogo": False,
                             "modeBarButtonsToRemove": ["lasso2d", "select2d"]})
     st.caption("圖表操作：滑鼠拖曳＝平移，滾輪＝縮放，雙擊＝還原。")
@@ -2399,7 +2399,7 @@ with col_right:
         st.info("無交易")
     else:
         st.dataframe(trades_zh[["出場日", "方向", "損益點數", "出場原因"]].iloc[::-1],
-                     height=520, width="stretch", hide_index=True)
+                     height=520, use_container_width=True, hide_index=True)
     with st.expander("參數摘要"):
         st.code(params_to_json_str(bt["params"]), language="json")
 
@@ -2429,18 +2429,18 @@ if chart_options["show_equity_curve"]:
         fig2.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
                            plot_bgcolor="#f7fafc", paper_bgcolor="rgba(0,0,0,0)",
                            legend=dict(orientation="h", y=1.05))
-        st.plotly_chart(fig2, width="stretch", config={"displaylogo": False})
+        st.plotly_chart(fig2, use_container_width=True, config={"displaylogo": False})
 
 # ---------------- 績效統計 + 交易明細 ----------------
 col_a, col_b = st.columns([1, 2])
 with col_a:
     st.markdown("#### 績效統計")
-    st.dataframe(metrics_to_df(m), hide_index=True, width="stretch", height=460)
+    st.dataframe(metrics_to_df(m), hide_index=True, use_container_width=True, height=460)
 with col_b:
     st.markdown("#### 交易明細")
     show_cols = [c for c in TRADE_DISPLAY_COLS if c in trades_zh.columns]
     st.dataframe(trades_zh[show_cols] if not trades_zh.empty else trades_zh,
-                 hide_index=True, width="stretch", height=460)
+                 hide_index=True, use_container_width=True, height=460)
 
 
 # ---------------- AI 分析包 ----------------
@@ -2769,18 +2769,18 @@ elif save_error:
 
 e1, e2, e3, e4, e5, e6 = st.columns(6)
 e1.download_button("交易明細 CSV", df_to_csv_bytes(trades_zh),
-                   file_name="交易明細.csv", width="stretch")
+                   file_name="交易明細.csv", use_container_width=True)
 e2.download_button("績效統計 CSV", df_to_csv_bytes(metrics_to_df(m)),
-                   file_name="績效統計.csv", width="stretch")
+                   file_name="績效統計.csv", use_container_width=True)
 e3.download_button("連續契約 CSV", df_to_csv_bytes(bt["cont"]),
-                   file_name="clean_continuous.csv", width="stretch")
+                   file_name="clean_continuous.csv", use_container_width=True)
 e4.download_button("換倉紀錄 CSV", df_to_csv_bytes(bt["roll_log"]),
-                   file_name="rollover_log.csv", width="stretch")
+                   file_name="rollover_log.csv", use_container_width=True)
 e5.download_button("策略 JSON", json.dumps(bt["cfg"], ensure_ascii=False,
                                           indent=2).encode("utf-8"),
-                   file_name="strategy.json", width="stretch")
+                   file_name="strategy.json", use_container_width=True)
 e6.download_button("AI 分析包 ZIP", ai_pack_bytes,
-                   file_name=ai_pack_file_name, width="stretch", type="primary")
+                   file_name=ai_pack_file_name, use_container_width=True, type="primary")
 st.caption("AI 分析包內含：AI_回測分析摘要.md、trades.csv、metrics.csv、"
            "equity_curve.csv、strategy_config.json，可直接丟給 ChatGPT／Claude／Gemini 分析。"
            f"本機執行時也會自動在 {DEFAULT_RECORD_DIR} 建立 Obsidian 回測紀錄資料夾，"
