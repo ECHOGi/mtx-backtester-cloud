@@ -121,11 +121,22 @@ def list_json_files_in_drive_folder(auth_config: Dict, folder_id: str) -> List[D
 
 
 def download_drive_file_bytes(auth_config: Dict, file_id: str) -> bytes:
-    """Download one non-Google-native Drive file as raw bytes."""
+    """Download one strategy file as bytes.
+
+    v0.6.7 起同時支援一般 JSON 檔與「檔名以 .json 結尾的 Google 文件」。
+    後者以 text/plain 匯出，方便連接器無法直接上傳本機檔時仍可投放策略。
+    """
     if not file_id:
         raise ValueError("Google Drive 檔案 ID 不可為空。")
     service = build_drive_service(auth_config)
-    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    meta = service.files().get(
+        fileId=file_id, fields="id,name,mimeType", supportsAllDrives=True
+    ).execute()
+    mime_type = str(meta.get("mimeType", ""))
+    if mime_type == "application/vnd.google-apps.document":
+        request = service.files().export_media(fileId=file_id, mimeType="text/plain")
+    else:
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     output = io.BytesIO()
     downloader = MediaIoBaseDownload(output, request)
     done = False

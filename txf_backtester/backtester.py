@@ -10,6 +10,7 @@ backtester.py - 單一持倉回測引擎（避免 look-ahead bias）。
   * v0.5.1 起可設定「獲利放大後排除 MACD 反向」，讓分段吊燈真正主導後段出場。
   * v0.6.5 起支援以「最大順向浮盈 ÷ 進場前已完成 K 棒 ATR」作為相對市場波動階梯。
   * v0.6.6 起支援「進場 ATR × 倍數」停損，並可在預定停損風險超過上限時略過進場。
+  * v0.6.7 起支援 50 萬資金池、固定風險比例與小台/微台等值動態部位。
   * 停損/停利/移動停損：盤中觸價，以觸價價位成交；若開盤跳空超過則以開盤價
   * 吊燈 / MACD 反向：收盤確認，以「收盤價」出場
 - 單一持倉：只有空手時才接受新訊號；不加碼、不反手
@@ -52,16 +53,27 @@ def _entry_reason(row: pd.Series, direction: str) -> str:
     return str(reason)
 
 
-def _margin_call_line(entry_price: float, direction: int, cost: CostModel) -> float | None:
+def _margin_call_line(entry_price: float, direction: int, cost: CostModel,
+                      pos: dict | None = None, realized: float = 0.0, p=None) -> float | None:
     """回傳斷頭判斷價格。
 
-    本專案的斷頭不是券商維持保證金判斷，而是：
-    持倉期間反向浮動損失 >= 安全緩衝金額。
+    v0.6.7 動態部位使用帳戶權益與維持保證金；舊策略仍沿用安全緩衝模型。
     """
+    if pos is not None and p is not None and (getattr(p, "use_dynamic_position_sizing", False)
+                                                or getattr(p, "use_account_margin_model", False)):
+        capital = _positive_float(getattr(p, "position_sizing_capital", None))
+        maintenance = _positive_float(pos.get("maintenance_margin_amount"))
+        total_point_value = _positive_float(pos.get("point_value_total"))
+        if capital is None or maintenance is None or total_point_value is None:
+            return None
+        loss_capacity = capital + float(realized) - maintenance
+        if loss_capacity <= 0:
+            return float(entry_price)
+        return entry_price - direction * (loss_capacity / total_point_value)
     if not cost.use_margin_call_check or cost.safety_buffer_amount <= 0:
         return None
-    q = max(int(cost.quantity), 1)
-    buffer_points = float(cost.safety_buffer_amount) / (float(cost.point_value) * q)
+    total_point_value = _position_point_value(pos, cost)
+    buffer_points = float(cost.safety_buffer_amount) / total_point_value
     return entry_price - direction * buffer_points
 
 
@@ -83,8 +95,9 @@ def _current_unrealized_points(entry_price: float, direction: int, row: pd.Serie
     return (float(row["close"]) - float(entry_price)) * int(direction)
 
 
-def _current_unrealized_amount(entry_price: float, direction: int, row: pd.Series, cost: CostModel) -> float:
-    return _current_unrealized_points(entry_price, direction, row) * float(cost.point_value) * int(cost.quantity)
+def _current_unrealized_amount(entry_price: float, direction: int, row: pd.Series,
+                               cost: CostModel, pos: dict | None = None) -> float:
+    return _current_unrealized_points(entry_price, direction, row) * _position_point_value(pos, cost)
 
 
 def _tier_reference_amount(pos: dict, entry_price: float, direction: int, row: pd.Series, cost: CostModel, p) -> float:
@@ -96,7 +109,7 @@ def _tier_reference_amount(pos: dict, entry_price: float, direction: int, row: p
     ref = str(getattr(p, "profit_tier_reference", "current_unrealized") or "current_unrealized").lower()
     if ref in {"max_favorable", "max_floating_profit", "max_profit", "peak_profit"}:
         return float(pos.get("max_favorable_amount", 0.0))
-    return _current_unrealized_amount(entry_price, direction, row, cost)
+    return _current_unrealized_amount(entry_price, direction, row, cost, pos)
 
 
 def _tier_reference_points(pos: dict, entry_price: float, direction: int, row: pd.Series, p) -> float:
@@ -132,11 +145,129 @@ def _stop_distance_points(p, entry_atr) -> float | None:
     return _positive_float(getattr(p, "stop_points", None))
 
 
-def _planned_stop_risk_amount(stop_distance_points, cost: CostModel) -> float | None:
+def _planned_stop_risk_amount(stop_distance_points, cost: CostModel, point_value_total: float | None = None) -> float | None:
     distance = _positive_float(stop_distance_points)
     if distance is None:
         return None
-    return distance * float(cost.point_value) * max(int(cost.quantity), 1)
+    total_value = point_value_total
+    if total_value is None:
+        total_value = float(cost.point_value) * max(int(cost.quantity), 1)
+    return distance * float(total_value)
+
+
+def _position_point_value(pos: dict | None, cost: CostModel) -> float:
+    if pos is not None:
+        value = _positive_float(pos.get("point_value_total"))
+        if value is not None:
+            return value
+    return float(cost.point_value) * max(int(cost.quantity), 1)
+
+
+def _position_fee_per_side(pos: dict | None, cost: CostModel) -> float:
+    if pos is not None:
+        try:
+            return float(pos.get("fee_per_side_total", 0.0))
+        except (TypeError, ValueError):
+            pass
+    return float(cost.fee) * max(int(cost.quantity), 1)
+
+
+def _fixed_position_spec(cost: CostModel, p) -> dict:
+    q = max(int(cost.quantity), 1)
+    total_point_value = float(cost.point_value) * q
+    # MTX 固定部位視為小台；其他商品退回原始保證金×口數。
+    small_point_value = _positive_float(getattr(p, "position_small_point_value", 50.0)) or 50.0
+    if abs(float(cost.point_value) - small_point_value) < 1e-9:
+        small_qty, micro_qty = q, 0
+        margin_per_contract = (_positive_float(getattr(p, "position_small_margin", None))
+                               or float(cost.original_margin_amount))
+        maintenance_per_contract = (_positive_float(getattr(p, "position_small_maintenance_margin", None))
+                                    or margin_per_contract * 0.77)
+        margin = margin_per_contract * q
+        maintenance = maintenance_per_contract * q
+    else:
+        small_qty, micro_qty = 0, q
+        margin = float(cost.original_margin_amount) * q
+        maintenance = margin * 0.77
+    return {
+        "micro_units": int(round(total_point_value / max(_positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0, 1e-9))),
+        "small_qty": int(small_qty),
+        "micro_qty": int(micro_qty),
+        "small_equivalent_quantity": total_point_value / small_point_value,
+        "point_value_total": total_point_value,
+        "fee_per_side_total": float(cost.fee) * q,
+        "margin_amount": float(margin),
+        "maintenance_margin_amount": float(maintenance),
+        "risk_budget_amount": None,
+        "stress_risk_amount": None,
+        "stress_multiple": None,
+        "position_sizing_mode": "fixed",
+    }
+
+
+def _contract_mix_from_micro_units(units: int, p) -> dict:
+    units = max(int(units), 0)
+    micro_pv = _positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0
+    small_pv = _positive_float(getattr(p, "position_small_point_value", 50.0)) or 50.0
+    ratio = max(int(round(small_pv / micro_pv)), 1)
+    small_qty = units // ratio
+    micro_qty = units % ratio
+    total_point_value = small_qty * small_pv + micro_qty * micro_pv
+    small_margin = _positive_float(getattr(p, "position_small_margin", 159000.0)) or 159000.0
+    micro_margin = _positive_float(getattr(p, "position_micro_margin", 32000.0)) or 32000.0
+    small_maint = _positive_float(getattr(p, "position_small_maintenance_margin", 122000.0)) or 122000.0
+    micro_maint = _positive_float(getattr(p, "position_micro_maintenance_margin", 24400.0)) or 24400.0
+    small_fee = max(float(getattr(p, "position_small_fee", 20.0) or 0.0), 0.0)
+    micro_fee = max(float(getattr(p, "position_micro_fee", 12.0) or 0.0), 0.0)
+    return {
+        "micro_units": units,
+        "small_qty": small_qty,
+        "micro_qty": micro_qty,
+        "small_equivalent_quantity": total_point_value / small_pv if small_pv else 0.0,
+        "point_value_total": total_point_value,
+        "fee_per_side_total": small_qty * small_fee + micro_qty * micro_fee,
+        "margin_amount": small_qty * small_margin + micro_qty * micro_margin,
+        "maintenance_margin_amount": small_qty * small_maint + micro_qty * micro_maint,
+    }
+
+
+def _dynamic_position_spec(stop_distance_points, p, realized: float = 0.0) -> dict | None:
+    distance = _positive_float(stop_distance_points)
+    capital = _positive_float(getattr(p, "position_sizing_capital", None))
+    risk_fraction = _positive_float(getattr(p, "position_risk_fraction", None))
+    micro_pv = _positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0
+    if distance is None or capital is None or risk_fraction is None:
+        return None
+    # 獲利不放大原始 50 萬風險池；虧損後則以剩餘權益縮小部位。
+    available_equity = max(min(capital, capital + float(realized)), 0.0)
+    if available_equity <= 0:
+        return None
+    risk_budget = available_equity * risk_fraction
+    per_unit_risk = distance * micro_pv
+    if per_unit_risk <= 0:
+        return None
+    raw_units = int(risk_budget // per_unit_risk)
+    max_units = max(int(getattr(p, "position_max_micro_units", 10) or 0), 0)
+    units = min(raw_units, max_units)
+    stress_multiple = _positive_float(getattr(p, "position_stress_multiple", 4.0)) or 4.0
+    use_stress = bool(getattr(p, "position_use_stress_capital_check", True))
+    while units > 0:
+        spec = _contract_mix_from_micro_units(units, p)
+        normal_risk = distance * float(spec["point_value_total"])
+        stress_risk = normal_risk * stress_multiple
+        # 保證金不是成本，但必須留在帳戶內作為抵押；壓力損失後仍需撐得住。
+        if (not use_stress) or (float(spec["margin_amount"]) + stress_risk <= available_equity):
+            spec.update({
+                "risk_budget_amount": risk_budget,
+                "planned_stop_risk_amount": normal_risk,
+                "stress_risk_amount": stress_risk,
+                "stress_multiple": stress_multiple,
+                "available_equity_at_entry": available_equity,
+                "position_sizing_mode": "dynamic_risk",
+            })
+            return spec
+        units -= 1
+    return None
 
 
 def _profit_tier_mode(p) -> str:
@@ -206,6 +337,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     realized = 0.0    # 已實現累積損益（元）
     risk_cap_skipped_entries = 0
     missing_atr_skipped_entries = 0
+    dynamic_size_skipped_entries = 0
 
     for i in range(n):
         row = df.iloc[i]
@@ -218,8 +350,6 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             entry_atr = pending.get("signal_atr")
             planned_stop_points = (_stop_distance_points(p, entry_atr)
                                    if getattr(p, "use_fixed_stop", False) else None)
-            planned_stop_risk_amount = _planned_stop_risk_amount(planned_stop_points, cost)
-
             skip_entry = False
             if (getattr(p, "use_fixed_stop", False)
                     and _stop_threshold_mode(p) == "entry_atr"
@@ -227,6 +357,21 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 # ATR 尚未形成時，不可用未完成資料猜測停損距離。
                 missing_atr_skipped_entries += 1
                 skip_entry = True
+
+            if getattr(p, "use_dynamic_position_sizing", False):
+                position_spec = None if skip_entry else _dynamic_position_spec(planned_stop_points, p, realized)
+                if not skip_entry and position_spec is None:
+                    dynamic_size_skipped_entries += 1
+                    skip_entry = True
+            else:
+                position_spec = _fixed_position_spec(cost, p)
+
+            planned_stop_risk_amount = None
+            if position_spec is not None:
+                planned_stop_risk_amount = _planned_stop_risk_amount(
+                    planned_stop_points, cost, position_spec.get("point_value_total"))
+                position_spec.setdefault("planned_stop_risk_amount", planned_stop_risk_amount)
+
             cap = _positive_float(getattr(p, "max_entry_risk_amount", None))
             if (not skip_entry and getattr(p, "use_entry_risk_cap", False)
                     and _stop_threshold_mode(p) == "entry_atr"
@@ -252,11 +397,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "entry_risk_cap_amount": cap
                     if (getattr(p, "use_entry_risk_cap", False)
                         and _stop_threshold_mode(p) == "entry_atr") else None,
+                    **(position_spec or {}),
                     "highest": row["high"],  # 供移動停損用（本根結束後才生效）
                     "lowest": row["low"],
                     "max_adverse_points": _adverse_points(entry_price, d, row),
                     "max_favorable_points": _favorable_points(entry_price, d, row),
-                    "max_favorable_amount": _favorable_points(entry_price, d, row) * cost.point_value * cost.quantity,
+                    "max_favorable_amount": _favorable_points(entry_price, d, row) * float((position_spec or {}).get("point_value_total", cost.point_value * cost.quantity)),
                 }
             pending = None
 
@@ -272,8 +418,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 float(pos.get("max_favorable_points", 0.0)),
                 _favorable_points(ep, d, row),
             )
-            pos["max_favorable_amount"] = float(pos.get("max_favorable_points", 0.0)) * cost.point_value * cost.quantity
-            margin_line = _margin_call_line(ep, d, cost)
+            pos["max_favorable_amount"] = float(pos.get("max_favorable_points", 0.0)) * _position_point_value(pos, cost)
+            margin_line = _margin_call_line(ep, d, cost, pos, realized, p)
 
             # a0) 斷頭開盤跳空：開盤已吃光安全緩衝金額，優先視同斷頭強制平倉
             if margin_line is not None:
@@ -393,16 +539,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             d = pos["direction"]
             px = exit_price - d * cost.slippage_points  # 出場滑價（不利方向）
             pts = (px - pos["entry_price"]) * d
-            q = cost.quantity
-            tax = (pos["entry_price"] + px) * cost.point_value * cost.tax_rate * q
-            amount = pts * cost.point_value * q - 2 * cost.fee * q - tax
+            point_value_total = _position_point_value(pos, cost)
+            fee_per_side_total = _position_fee_per_side(pos, cost)
+            tax = (pos["entry_price"] + px) * point_value_total * cost.tax_rate
+            amount = pts * point_value_total - 2 * fee_per_side_total - tax
             max_adverse_points = float(pos.get("max_adverse_points", 0.0))
-            max_adverse_amount = max_adverse_points * cost.point_value * q
+            max_adverse_amount = max_adverse_points * point_value_total
             max_favorable_points = float(pos.get("max_favorable_points", 0.0))
-            max_favorable_amount = max_favorable_points * cost.point_value * q
+            max_favorable_amount = max_favorable_points * point_value_total
             entry_atr = _positive_float(pos.get("entry_atr"))
             max_favorable_atr_multiple = (max_favorable_points / entry_atr) if entry_atr else None
-            required_safety_capital = cost.original_margin_amount + max_adverse_amount
+            required_safety_capital = float(pos.get("margin_amount", cost.original_margin_amount)) + max_adverse_amount
             trades.append({
                 "signal_date": pos["signal_date"],
                 "signal_bar_index": pos["signal_i"],
@@ -414,7 +561,14 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "direction": "long" if d == 1 else "short",
                 "entry_price": round(pos["entry_price"], 2),
                 "exit_price": round(px, 2),
-                "quantity": q,
+                "quantity": round(float(pos.get("small_equivalent_quantity", 1.0)), 2),
+                "small_quantity": int(pos.get("small_qty", 0)),
+                "micro_quantity": int(pos.get("micro_qty", 0)),
+                "position_micro_units": int(pos.get("micro_units", 0)),
+                "point_value_total": round(point_value_total, 1),
+                "position_margin_amount": round(float(pos.get("margin_amount", 0.0)), 1),
+                "maintenance_margin_amount": round(float(pos.get("maintenance_margin_amount", 0.0)), 1),
+                "position_sizing_mode": str(pos.get("position_sizing_mode", "fixed")),
                 "pnl_points": round(pts, 2),
                 "pnl_amount": round(amount, 1),
                 "holding_bars": i - pos["entry_i"] + 1,
@@ -431,6 +585,14 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     if _positive_float(pos.get("planned_stop_risk_amount")) else None,
                 "entry_risk_cap_amount": round(float(pos.get("entry_risk_cap_amount")), 1)
                     if _positive_float(pos.get("entry_risk_cap_amount")) else None,
+                "risk_budget_amount": round(float(pos.get("risk_budget_amount")), 1)
+                    if _positive_float(pos.get("risk_budget_amount")) else None,
+                "stress_risk_amount": round(float(pos.get("stress_risk_amount")), 1)
+                    if _positive_float(pos.get("stress_risk_amount")) else None,
+                "stress_multiple": round(float(pos.get("stress_multiple")), 2)
+                    if _positive_float(pos.get("stress_multiple")) else None,
+                "available_equity_at_entry": round(float(pos.get("available_equity_at_entry")), 1)
+                    if _positive_float(pos.get("available_equity_at_entry")) else None,
                 "max_favorable_atr_multiple": round(max_favorable_atr_multiple, 4)
                     if max_favorable_atr_multiple is not None else None,
                 "required_safety_capital": round(required_safety_capital, 1),
@@ -469,18 +631,19 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 float(pos.get("max_favorable_points", 0.0)),
                 _favorable_points(pos["entry_price"], pos["direction"], row),
             )
-            pos["max_favorable_amount"] = float(pos.get("max_favorable_points", 0.0)) * cost.point_value * cost.quantity
+            pos["max_favorable_amount"] = float(pos.get("max_favorable_points", 0.0)) * _position_point_value(pos, cost)
 
         # ---- 6) 權益曲線（已實現 + 未實現以收盤價估）----
         unreal = 0.0
         if pos is not None:
             unreal = ((row["close"] - pos["entry_price"]) * pos["direction"]
-                      * cost.point_value * cost.quantity)
+                      * _position_point_value(pos, cost))
         equity_rows.append({
             "datetime": dt,
             "equity": realized + unreal,
             "risk_cap_skipped_entries": risk_cap_skipped_entries,
             "missing_atr_skipped_entries": missing_atr_skipped_entries,
+            "dynamic_size_skipped_entries": dynamic_size_skipped_entries,
         })
 
     trades_df = pd.DataFrame(trades, columns=[
@@ -488,12 +651,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "entry_date", "entry_execution_date", "entry_bar_index",
         "exit_date", "exit_bar_index", "direction",
         "entry_price", "exit_price", "quantity",
+        "small_quantity", "micro_quantity", "position_micro_units",
+        "point_value_total", "position_margin_amount", "maintenance_margin_amount",
+        "position_sizing_mode",
         "pnl_points", "pnl_amount", "holding_bars",
         "exit_reason", "entry_reason",
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
         "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
-        "entry_risk_cap_amount", "max_favorable_atr_multiple",
+        "entry_risk_cap_amount", "risk_budget_amount", "stress_risk_amount",
+        "stress_multiple", "available_equity_at_entry",
+        "max_favorable_atr_multiple",
         "required_safety_capital"])
     equity_df = pd.DataFrame(equity_rows)
     return trades_df, equity_df

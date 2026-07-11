@@ -88,6 +88,23 @@ class StrategyParams:
     # 僅限制預定停損距離，不保證跳空時的實際損失不超過上限。
     use_entry_risk_cap: bool = False
     max_entry_risk_amount: float = 20000.0
+    # v0.6.7：依帳戶資金與單筆風險率動態決定部位。
+    # 以「微台等值單位」計算：1 單位=1口微台；5單位=1口小台；10單位=2口小台。
+    use_dynamic_position_sizing: bool = False
+    use_account_margin_model: bool = False
+    position_sizing_capital: float = 500000.0
+    position_risk_fraction: float = 0.04
+    position_stress_multiple: float = 4.0
+    position_max_micro_units: int = 10
+    position_use_stress_capital_check: bool = True
+    position_micro_point_value: float = 10.0
+    position_small_point_value: float = 50.0
+    position_micro_margin: float = 32000.0
+    position_small_margin: float = 159000.0
+    position_micro_maintenance_margin: float = 24400.0
+    position_small_maintenance_margin: float = 122000.0
+    position_micro_fee: float = 12.0
+    position_small_fee: float = 20.0
     use_take_profit: bool = False
     take_profit_points: float = 200.0
     use_trailing_stop: bool = False
@@ -125,6 +142,14 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_macd_reverse",
                "use_fixed_stop", "stop_threshold_mode", "stop_points", "stop_atr_multiple",
                "use_entry_risk_cap", "max_entry_risk_amount",
+               "use_dynamic_position_sizing", "use_account_margin_model",
+               "position_sizing_capital",
+               "position_risk_fraction", "position_stress_multiple",
+               "position_max_micro_units", "position_use_stress_capital_check",
+               "position_micro_point_value", "position_small_point_value",
+               "position_micro_margin", "position_small_margin",
+               "position_micro_maintenance_margin", "position_small_maintenance_margin",
+               "position_micro_fee", "position_small_fee",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]
 

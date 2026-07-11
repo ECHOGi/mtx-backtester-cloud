@@ -359,6 +359,73 @@ def main():
         cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
     ))
 
+    # 23. 動態部位：低 ATR 時由 50 萬、4% 風險預算與最大10微台單位，配置2口小台。
+    passed.append(run_case(
+        "dynamic_position_low_atr_scales_to_two_mtx",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 110, "low": 99, "close": 108},
+        ],
+        base_params(
+            use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75,
+            use_dynamic_position_sizing=True, position_sizing_capital=500000,
+            position_risk_fraction=0.04, position_stress_multiple=4.0,
+            position_max_micro_units=10,
+        ),
+        {"entry_price": 100.0, "exit_price": 108.0, "exit_reason": "end_of_data",
+         "quantity": 2.0, "small_quantity": 2, "micro_quantity": 0,
+         "position_micro_units": 10, "point_value_total": 100.0,
+         "planned_stop_points": 7.5, "planned_stop_risk_amount": 750.0,
+         "risk_budget_amount": 20000.0, "stress_risk_amount": 3000.0,
+         "pnl_amount": 720.0},
+        cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
+    # 24. 動態部位：高 ATR 時縮小為2口微台，停損點數不變。
+    passed.append(run_case(
+        "dynamic_position_high_atr_scales_to_micro",
+        [
+            {"datetime": "2025-01-01", "open": 9000, "high": 9100, "low": 8900, "close": 9050,
+             "atr": 1000, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 10000, "high": 10100, "low": 9900, "close": 10050},
+        ],
+        base_params(
+            use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75,
+            use_dynamic_position_sizing=True, position_sizing_capital=500000,
+            position_risk_fraction=0.04, position_stress_multiple=4.0,
+            position_max_micro_units=10,
+        ),
+        {"entry_price": 10000.0, "exit_price": 10050.0, "exit_reason": "end_of_data",
+         "quantity": 0.4, "small_quantity": 0, "micro_quantity": 2,
+         "position_micro_units": 2, "point_value_total": 20.0,
+         "planned_stop_points": 750.0, "planned_stop_risk_amount": 15000.0,
+         "risk_budget_amount": 20000.0, "stress_risk_amount": 60000.0,
+         "pnl_amount": 952.0},
+        cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
+    # 25. 4倍跳空壓力＋保證金合計不可超過50萬：原可10單位時縮為9單位。
+    passed.append(run_case(
+        "dynamic_position_stress_cap_reduces_units",
+        [
+            {"datetime": "2025-01-01", "open": 9000, "high": 9100, "low": 8900, "close": 9050,
+             "atr": 666.6666666667, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 10000, "high": 10100, "low": 9990, "close": 10050},
+        ],
+        base_params(
+            use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75,
+            use_dynamic_position_sizing=True, position_sizing_capital=500000,
+            position_risk_fraction=0.10, position_stress_multiple=4.0,
+            position_max_micro_units=10,
+        ),
+        {"quantity": 1.8, "small_quantity": 1, "micro_quantity": 4,
+         "position_micro_units": 9, "point_value_total": 90.0,
+         "planned_stop_points": 500.0, "planned_stop_risk_amount": 45000.0,
+         "risk_budget_amount": 50000.0, "stress_risk_amount": 180000.0},
+        cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
     print("PASS", len(passed), "cases")
     for name in passed:
         print("-", name)

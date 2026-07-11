@@ -80,7 +80,13 @@ TRADE_COL_ZH = {
     "entry_bar_index": "進場K棒序",
     "exit_date": "出場日", "exit_bar_index": "出場K棒序",
     "direction": "方向", "entry_price": "進場價", "exit_price": "出場價",
-    "quantity": "口數", "pnl_points": "損益點數", "pnl_amount": "損益金額",
+    "quantity": "小台等值口數",
+    "small_quantity": "小台口數", "micro_quantity": "微台口數",
+    "position_micro_units": "微台等值單位", "point_value_total": "部位每點總價值",
+    "position_margin_amount": "進場原始保證金",
+    "maintenance_margin_amount": "維持保證金",
+    "position_sizing_mode": "部位模式",
+    "pnl_points": "損益點數", "pnl_amount": "損益金額",
     "holding_bars": "持倉K棒數", "exit_reason": "出場原因",
     "entry_reason": "進場條件",
     "max_adverse_points": "最大反向浮動點數",
@@ -91,6 +97,10 @@ TRADE_COL_ZH = {
     "planned_stop_points": "預定停損點數",
     "planned_stop_risk_amount": "預定停損風險金額",
     "entry_risk_cap_amount": "單筆風險上限",
+    "risk_budget_amount": "本筆風險預算",
+    "stress_risk_amount": "跳空壓力風險",
+    "stress_multiple": "跳空壓力倍數",
+    "available_equity_at_entry": "進場時可用權益",
     "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
@@ -303,6 +313,12 @@ def compare_row(idx: int, name: str, metrics: dict) -> dict:
         "交易次數": metrics.get("交易次數", 0),
         "風險上限跳過進場次數": metrics.get("風險上限跳過進場次數", 0),
         "ATR缺值跳過進場次數": metrics.get("ATR缺值跳過進場次數", 0),
+        "動態部位跳過次數": metrics.get("動態部位無可用口數跳過次數", 0),
+        "平均小台等值口數": metrics.get("平均小台等值口數", ""),
+        "最大小台等值口數": metrics.get("最大小台等值口數", ""),
+        "最大預定停損風險(元)": metrics.get("最大預定停損風險(元)", ""),
+        "最大跳空壓力風險(元)": metrics.get("最大跳空壓力風險(元)", ""),
+        "最低帳戶權益(元)": metrics.get("最低帳戶權益(元)", ""),
         "勝率(%)": metrics.get("勝率(%)", 0),
         "最大連續虧損(次)": metrics.get("最大連續虧損(次)", ""),
         "平均持倉K棒數": metrics.get("平均持倉K棒數", ""),
@@ -470,7 +486,12 @@ def run_batch(args) -> Path:
     point_value = float(args.point_value)
     fee = float(args.fee)
     slippage = float(args.slippage)
-    initial_capital = float(args.initial_capital)
+    try:
+        batch_obj = json.loads(text)
+    except Exception:
+        batch_obj = {}
+    batch_capital = batch_obj.get("initial_capital") if isinstance(batch_obj, dict) else None
+    initial_capital = float(batch_capital if batch_capital is not None else args.initial_capital)
     # v0.4.6：期交稅預設計入；--no-tax 關閉（--use-tax 保留相容、已無作用）
     tax_rate = 0.0 if args.no_tax else SYMBOLS["MTX"].get("tax_rate", 0.0)
     safety = calculate_mtx_safety_settings(cont, d_end, point_value)

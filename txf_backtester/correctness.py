@@ -31,7 +31,12 @@ def _direction_value(direction: str) -> int:
     return 1 if direction == "long" else -1
 
 
-def _margin_call_line(entry_price: float, direction: int, cost: CostModel) -> float | None:
+def _margin_call_line(entry_price: float, direction: int, cost: CostModel, p: Any = None) -> float | None:
+    # 動態部位採帳戶權益/維持保證金模型；逐筆驗證另由交易金額與斷頭結果檢查，
+    # 不套用舊版固定安全緩衝線。
+    if p is not None and (getattr(p, "use_dynamic_position_sizing", False)
+                          or getattr(p, "use_account_margin_model", False)):
+        return None
     if not getattr(cost, "use_margin_call_check", False):
         return None
     if float(getattr(cost, "safety_buffer_amount", 0.0) or 0.0) <= 0:
@@ -125,7 +130,7 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
         row = df.iloc[i]
         exit_price, exit_reason = None, None
         max_favorable_points = max(max_favorable_points, _favorable_points(entry_price, d, row))
-        margin_line = _margin_call_line(entry_price, d, cost)
+        margin_line = _margin_call_line(entry_price, d, cost, p)
 
         if margin_line is not None:
             if d == 1 and row["open"] <= margin_line:
@@ -303,11 +308,22 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
         expected_pts = (float(t["exit_price"]) - float(t["entry_price"])) * d
         add("pnl_points", abs(float(t["pnl_points"]) - expected_pts) < ROUND_TOL,
             f"actual={t['pnl_points']}, expected={expected_pts}")
-        q = int(t.get("quantity", cost.quantity))
-        tax = (float(t["entry_price"]) + float(t["exit_price"])) * cost.point_value * cost.tax_rate * q
-        expected_amount = expected_pts * cost.point_value * q - 2 * cost.fee * q - tax
-        add("pnl_amount", abs(float(t["pnl_amount"]) - round(expected_amount, 1)) < AMOUNT_TOL,
-            f"actual={t['pnl_amount']}, expected={round(expected_amount, 1)}")
+        point_value_total = float(t.get("point_value_total", float(cost.point_value) * int(cost.quantity)))
+        if "small_quantity" in t and "micro_quantity" in t:
+            small_qty = int(t.get("small_quantity", 0) or 0)
+            micro_qty = int(t.get("micro_quantity", 0) or 0)
+            if str(t.get("position_sizing_mode", "fixed")) == "dynamic_risk":
+                fee_per_side = (small_qty * float(getattr(p, "position_small_fee", 20.0))
+                                + micro_qty * float(getattr(p, "position_micro_fee", 12.0)))
+            else:
+                fee_per_side = float(cost.fee) * int(cost.quantity)
+        else:
+            fee_per_side = float(cost.fee) * int(cost.quantity)
+        tax = (float(t["entry_price"]) + float(t["exit_price"])) * point_value_total * cost.tax_rate
+        expected_amount = expected_pts * point_value_total - 2 * fee_per_side - tax
+        amount_tol = max(AMOUNT_TOL, point_value_total * ROUND_TOL)
+        add("pnl_amount", abs(float(t["pnl_amount"]) - round(expected_amount, 1)) < amount_tol,
+            f"actual={t['pnl_amount']}, expected={round(expected_amount, 1)}, tol={round(amount_tol, 3)}")
         favorable = 0.0
         for j in range(ent_i, exit_i + 1):
             favorable = max(favorable, _favorable_points(float(t["entry_price"]), d, df.iloc[j]))

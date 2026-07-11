@@ -30,16 +30,20 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     m = {}
     risk_cap_skips = 0
     missing_atr_skips = 0
+    dynamic_size_skips = 0
     if equity is not None and not equity.empty:
         if "risk_cap_skipped_entries" in equity.columns:
             risk_cap_skips = int(pd.to_numeric(equity["risk_cap_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
         if "missing_atr_skipped_entries" in equity.columns:
             missing_atr_skips = int(pd.to_numeric(equity["missing_atr_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
+        if "dynamic_size_skipped_entries" in equity.columns:
+            dynamic_size_skips = int(pd.to_numeric(equity["dynamic_size_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
     if trades is None or trades.empty:
         return {
             "交易次數": 0,
             "風險上限跳過進場次數": risk_cap_skips,
             "ATR缺值跳過進場次數": missing_atr_skips,
+            "動態部位無可用口數跳過次數": dynamic_size_skips,
             "是否曾發生斷頭": "否",
             "斷頭次數": 0,
             "第一次斷頭日期": "無",
@@ -73,6 +77,7 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     m["交易次數"] = int(len(trades))
     m["風險上限跳過進場次數"] = risk_cap_skips
     m["ATR缺值跳過進場次數"] = missing_atr_skips
+    m["動態部位無可用口數跳過次數"] = dynamic_size_skips
     m["獲利次數"] = int(len(wins))
     m["虧損次數"] = int(len(losses))
     m["勝率(%)"] = round(len(wins) / len(trades) * 100, 2)
@@ -87,6 +92,25 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     m["最大虧損(元)"] = round(pnl.min(), 0)
     m["最大連續虧損(次)"] = max_consecutive_losses(pnl)
     m["平均持倉K棒數"] = round(trades["holding_bars"].mean(), 1)
+    # v0.6.7：動態部位與資金使用統計。
+    if "quantity" in trades.columns:
+        qty = pd.to_numeric(trades["quantity"], errors="coerce").dropna()
+        if len(qty):
+            m["平均小台等值口數"] = round(float(qty.mean()), 2)
+            m["最大小台等值口數"] = round(float(qty.max()), 2)
+    if "planned_stop_risk_amount" in trades.columns:
+        planned = pd.to_numeric(trades["planned_stop_risk_amount"], errors="coerce").dropna()
+        if len(planned):
+            m["平均預定停損風險(元)"] = round(float(planned.mean()), 0)
+            m["最大預定停損風險(元)"] = round(float(planned.max()), 0)
+    if "stress_risk_amount" in trades.columns:
+        stress = pd.to_numeric(trades["stress_risk_amount"], errors="coerce").dropna()
+        if len(stress):
+            m["最大跳空壓力風險(元)"] = round(float(stress.max()), 0)
+    if "position_margin_amount" in trades.columns:
+        margin_used = pd.to_numeric(trades["position_margin_amount"], errors="coerce").dropna()
+        if len(margin_used):
+            m["最大進場原始保證金(元)"] = round(float(margin_used.max()), 0)
 
     # v0.6.3：獲利保留與浮盈轉虧。
     # 加權保留率 = 獲利交易實現點數合計 / 同批獲利交易最大順向浮盈點數合計。
@@ -130,6 +154,8 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
         if base:
             m["最大回撤(%)"] = round(dd.min() / base * 100, 2)
             capital_curve = base + eq
+            m["最低帳戶權益(元)"] = round(float(capital_curve.min()), 0)
+            m["最低帳戶權益率(%)"] = round(float(capital_curve.min()) / float(base) * 100, 2)
             rolling_peak = capital_curve.cummax()
             standard_dd_pct = ((capital_curve / rolling_peak) - 1.0) * 100
             m["策略標準最大回撤率(%)"] = round(float(standard_dd_pct.min()), 2)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.6.6 ATR 停損與風險上限版）。
+app.py - 台指期回測工具 Streamlit 介面（v0.6.7 動態部位與50萬資金池版）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -25,8 +25,8 @@ import urllib.request
 import zipfile
 
 
-APP_VERSION = "v0.6.6"
-APP_RELEASE_NAME = "ATR 停損與風險上限版"
+APP_VERSION = "v0.6.7"
+APP_RELEASE_NAME = "動態部位與50萬資金池版"
 
 
 def _safe_filename_part(text: str) -> str:
@@ -271,7 +271,13 @@ TRADE_COL_ZH = {
     "entry_bar_index": "進場K棒序",
     "exit_date": "出場日", "exit_bar_index": "出場K棒序",
     "direction": "方向", "entry_price": "進場價", "exit_price": "出場價",
-    "quantity": "口數", "pnl_points": "損益點數", "pnl_amount": "損益金額",
+    "quantity": "小台等值口數",
+    "small_quantity": "小台口數", "micro_quantity": "微台口數",
+    "position_micro_units": "微台等值單位", "point_value_total": "部位每點總價值",
+    "position_margin_amount": "進場原始保證金",
+    "maintenance_margin_amount": "維持保證金",
+    "position_sizing_mode": "部位模式",
+    "pnl_points": "損益點數", "pnl_amount": "損益金額",
     "holding_bars": "持倉K棒數", "exit_reason": "出場原因",
     "entry_reason": "進場條件",
     "max_adverse_points": "最大反向浮動點數",
@@ -282,12 +288,17 @@ TRADE_COL_ZH = {
     "planned_stop_points": "預定停損點數",
     "planned_stop_risk_amount": "預定停損風險金額",
     "entry_risk_cap_amount": "單筆風險上限",
+    "risk_budget_amount": "本筆風險預算",
+    "stress_risk_amount": "跳空壓力風險",
+    "stress_multiple": "跳空壓力倍數",
+    "available_equity_at_entry": "進場時可用權益",
     "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
 TRADE_DISPLAY_COLS = ["訊號日", "進場日", "出場日", "方向", "進場價", "進場可用ATR",
-                      "預定停損點數", "預定停損風險金額", "單筆風險上限",
-                      "出場價", "口數", "損益點數", "損益金額", "最大順向浮盈ATR倍數",
+                      "預定停損點數", "預定停損風險金額", "本筆風險預算",
+                      "跳空壓力風險", "小台等值口數", "小台口數", "微台口數",
+                      "出場價", "損益點數", "損益金額", "最大順向浮盈ATR倍數",
                       "持倉K棒數", "出場原因", "進場條件"]
 
 # ============ 條件目錄：類型 → 型態（多空通用、二層勾選） ============
@@ -1856,7 +1867,7 @@ def execute_backtest():
     st.session_state["bt"] = {
         "sig": sig, "trades": trades, "equity": equity, "m": m,
         "trades_zh": zh_trades(trades), "cfg": cfg, "params": params,
-        "cost": cost, "initial_capital": initial_capital, "symbol": symbol,
+        "cost": cost, "initial_capital": batch_initial_capital, "symbol": symbol,
         "d_start": d_start, "d_end": d_end, "n_bars": len(data),
         "cont": cont, "roll_log": roll_log,
         "strat": copy.deepcopy(strat), "hash": settings_hash(),
@@ -2013,6 +2024,10 @@ def _run_batch_core_for_period(text: str, period_start, period_end,
     """執行同一批策略在指定期間的回測，供一般批次與樣本內外驗證共用。"""
     try:
         batch_name, items = parse_strategy_batch(text)
+        batch_obj = json.loads(text)
+        batch_initial_capital = (float(batch_obj.get("initial_capital"))
+                                 if isinstance(batch_obj, dict) and batch_obj.get("initial_capital") is not None
+                                 else float(initial_capital))
     except Exception as e:  # noqa: BLE001
         st.error(f"批次策略 JSON 讀取失敗：{e}")
         return None
@@ -2048,7 +2063,7 @@ def _run_batch_core_for_period(text: str, period_start, period_end,
         trades_, equity_ = run_backtest(sig, cost, params)
         m_ = compute_metrics(trades_, equity_,
                              margin_reference=SYMBOLS[symbol]["margin_reference"],
-                             quantity=cost.quantity, initial_capital=initial_capital,
+                             quantity=cost.quantity, initial_capital=batch_initial_capital,
                              market_data=data)
         tzh_ = zh_trades(trades_)
         row = _batch_compare_row(idx, name, m_)
