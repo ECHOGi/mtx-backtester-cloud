@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import itertools
 import os
 import re
 import sys
@@ -60,7 +61,7 @@ def detect_record_dir() -> str:
 
 DEFAULT_RECORD_DIR = detect_record_dir()
 STRATEGY_DROPBOX_NAME = "_策略投放箱"
-BATCH_MAX_STRATEGIES = 20
+BATCH_MAX_STRATEGIES = 50
 PREPARED_MTX_FILE = "MTX_stable_rollover_daily.csv"
 MTX_ORIGINAL_MARGIN = 159000.0
 MTX_SAFETY_STRESS_RATE = 0.25
@@ -86,6 +87,8 @@ TRADE_COL_ZH = {
     "position_margin_amount": "進場原始保證金",
     "maintenance_margin_amount": "維持保證金",
     "position_sizing_mode": "部位模式",
+    "position_regime": "進場盤勢部位",
+    "requested_micro_units": "目標微台等值單位",
     "pnl_points": "損益點數", "pnl_amount": "損益金額",
     "holding_bars": "持倉K棒數", "exit_reason": "出場原因",
     "entry_reason": "進場條件",
@@ -159,21 +162,13 @@ def _set_nested(cfg: dict, path: str, value):
 
 
 def expand_sweeps(obj: dict) -> list[dict]:
-    """v0.4.6：展開 sweep 參數掃描設定。
+    """展開單參數或多參數笛卡兒積掃描。
 
-    JSON 範例：
-    {
-      "batch_name": "batch_005_吊燈倍數掃描",
-      "strategies": [ ...固定對照組（可省略）... ],
-      "sweep": {
-        "base": { ...完整策略 config... },
-        "param": "exit.chandelier_mult",
-        "values": [2.0, 2.25, 2.5, 2.75, 3.0],
-        "name_prefix": "MA20_60_120_吊燈22x"
-      }
-    }
-    sweep 可以是單一物件或物件陣列（多個掃描共用一批）。
-    每個 value 會複製 base、把 param 設成該值，策略名 = name_prefix + value。
+    舊格式仍支援：param + values。
+    v0.7.0 新格式：
+      "params": {"exit.stop_atr_multiple": [0.5, 0.75],
+                 "holding_policy.minimum_holding_bars": [0, 5]}
+    可用 name_template，例如 "ATR{exit.stop_atr_multiple}_hold{holding_policy.minimum_holding_bars}"。
     """
     sweeps = obj.get("sweep")
     if sweeps is None:
@@ -183,15 +178,36 @@ def expand_sweeps(obj: dict) -> list[dict]:
     items = []
     for si, sw in enumerate(sweeps, start=1):
         base = sw.get("base")
-        param = sw.get("param")
-        values = sw.get("values")
-        if not isinstance(base, dict) or not param or not isinstance(values, list):
-            raise ValueError(f"sweep 第 {si} 組格式錯誤：需要 base(物件)/param(字串)/values(陣列)。")
-        prefix = str(sw.get("name_prefix") or f"{param}=")
-        for v in values:
-            cfg = json.loads(json.dumps(base))  # deep copy
-            _set_nested(cfg, param, v)
-            cfg["name"] = f"{prefix}{v}"
+        if not isinstance(base, dict):
+            raise ValueError(f"sweep 第 {si} 組格式錯誤：需要 base 物件。")
+        params = sw.get("params")
+        if params is None:
+            param = sw.get("param")
+            values = sw.get("values")
+            if not param or not isinstance(values, list):
+                raise ValueError(f"sweep 第 {si} 組需要 param/values 或 params。")
+            params = {param: values}
+        if not isinstance(params, dict) or not params:
+            raise ValueError(f"sweep 第 {si} 組 params 必須是非空物件。")
+        paths = list(params.keys())
+        value_lists = [params[x] for x in paths]
+        if any(not isinstance(v, list) or not v for v in value_lists):
+            raise ValueError(f"sweep 第 {si} 組每個 params 值都必須是非空陣列。")
+        prefix = str(sw.get("name_prefix") or "")
+        template = sw.get("name_template")
+        for combo in itertools.product(*value_lists):
+            cfg = json.loads(json.dumps(base))
+            mapping = dict(zip(paths, combo))
+            for path, value in mapping.items():
+                _set_nested(cfg, path, value)
+            if template:
+                name = str(template)
+                for path, value in mapping.items():
+                    name = name.replace("{" + path + "}", str(value))
+            else:
+                suffix = "_".join(f"{path.split('.')[-1]}={value}" for path, value in mapping.items())
+                name = f"{prefix}{suffix}"
+            cfg["name"] = name
             items.append(cfg)
     return items
 
@@ -314,16 +330,24 @@ def compare_row(idx: int, name: str, metrics: dict) -> dict:
         "風險上限跳過進場次數": metrics.get("風險上限跳過進場次數", 0),
         "ATR缺值跳過進場次數": metrics.get("ATR缺值跳過進場次數", 0),
         "動態部位跳過次數": metrics.get("動態部位無可用口數跳過次數", 0),
+        "核心部位交易數": metrics.get("核心部位交易數", ""),
+        "強趨勢加碼交易數": metrics.get("強趨勢加碼交易數", ""),
+        "防禦部位交易數": metrics.get("防禦部位交易數", ""),
         "平均小台等值口數": metrics.get("平均小台等值口數", ""),
         "最大小台等值口數": metrics.get("最大小台等值口數", ""),
         "最大預定停損風險(元)": metrics.get("最大預定停損風險(元)", ""),
         "最大跳空壓力風險(元)": metrics.get("最大跳空壓力風險(元)", ""),
         "最低帳戶權益(元)": metrics.get("最低帳戶權益(元)", ""),
+        "歷史最低運作資金(元)": metrics.get("歷史最低運作資金(元)", ""),
+        "期末強制平倉交易數": metrics.get("期末強制平倉交易數", ""),
+        "期末強制平倉損益(元)": metrics.get("期末強制平倉損益(元)", ""),
         "勝率(%)": metrics.get("勝率(%)", 0),
         "最大連續虧損(次)": metrics.get("最大連續虧損(次)", ""),
         "平均持倉K棒數": metrics.get("平均持倉K棒數", ""),
         "資金持續未創新高交易天數": metrics.get("資金持續未創新高交易天數", ""),
         "年化報酬率(%)": metrics.get("年化報酬率(%)", ""),
+        "比較基準": metrics.get("比較基準", ""),
+        "相對基準年化差(%點)": metrics.get("相對基準年化差(%點)", ""),
         "總報酬率(%)": metrics.get("總報酬率(%)", 0),
         "是否曾發生斷頭": metrics.get("是否曾發生斷頭", "否"),
         "斷頭次數": metrics.get("斷頭次數", 0),
@@ -520,6 +544,13 @@ def run_batch(args) -> Path:
             initial_capital=initial_capital,
             market_data=data,
         )
+        research = cfg.get("research") or {}
+        benchmark_name = str(research.get("benchmark_name") or getattr(params, "benchmark_name", "") or "")
+        benchmark_target = float(research.get("benchmark_annual_return_target") or getattr(params, "benchmark_annual_return_target", 0.0) or 0.0)
+        if benchmark_name or benchmark_target:
+            metrics["比較基準"] = benchmark_name or "自訂年化目標"
+            annual = metrics.get("年化報酬率(%)")
+            metrics["相對基準年化差(%點)"] = round(float(annual) - benchmark_target, 2) if annual is not None else None
         row = compare_row(idx, name, metrics)
         rows.append(row)
         results.append({

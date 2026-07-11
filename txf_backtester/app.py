@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.6.7 動態部位與50萬資金池版）。
+app.py - 台指期回測工具 Streamlit 介面（v0.7.0 通用量化研究平台）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -17,6 +17,7 @@ v0.3.3 重點（回測核心零修改）：
 import copy
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -25,7 +26,7 @@ import urllib.request
 import zipfile
 
 
-APP_VERSION = "v0.6.7"
+APP_VERSION = "v0.7.0"
 APP_RELEASE_NAME = "動態部位與50萬資金池版"
 
 
@@ -254,6 +255,11 @@ COND_ZH = {
     "kd_k_above_d": "K在D上", "kd_k_below_d": "K在D下",
     "rsi_cross_up": "RSI上穿門檻", "rsi_cross_down": "RSI下穿門檻",
     "volume_above_prev": "單日爆量",
+    "normalized_atr_above": "相對ATR高於門檻", "normalized_atr_below": "相對ATR低於門檻",
+    "atr_percentile_above": "ATR百分位偏高", "atr_percentile_below": "ATR百分位偏低",
+    "ma_slope_pct_above": "均線中期斜率高於門檻", "ma_slope_pct_below": "均線中期斜率低於門檻",
+    "close_drawdown_from_high_above": "距高點回撤小於門檻", "close_drawdown_from_high_below": "距高點回撤大於門檻",
+    "close_breakout_high": "突破過去高點", "close_breakdown_low": "跌破過去低點",
     "macd_dif_cross_up": "DIF上穿DEA", "macd_dif_cross_down": "DIF下穿DEA",
     "ma_bullish_alignment": "均線多頭排列", "ma_bearish_alignment": "均線空頭排列",
     "ma_cross_up": "均線黃金交叉", "ma_cross_down": "均線死亡交叉",
@@ -277,6 +283,8 @@ TRADE_COL_ZH = {
     "position_margin_amount": "進場原始保證金",
     "maintenance_margin_amount": "維持保證金",
     "position_sizing_mode": "部位模式",
+    "position_regime": "進場盤勢部位",
+    "requested_micro_units": "目標微台等值單位",
     "pnl_points": "損益點數", "pnl_amount": "損益金額",
     "holding_bars": "持倉K棒數", "exit_reason": "出場原因",
     "entry_reason": "進場條件",
@@ -679,7 +687,7 @@ MTX_ORIGINAL_MARGIN = 159000.0
 MTX_SAFETY_STRESS_RATE = 0.25
 
 # v0.4.1：批次回測策略數上限。v0.4.6：10 → 20。
-BATCH_MAX_STRATEGIES = 20
+BATCH_MAX_STRATEGIES = 50
 
 # v0.4.2：策略投放箱。
 # ChatGPT / 其他 AI 只要把批次策略 JSON 放到這個 Google Drive 同步資料夾，
@@ -1888,12 +1896,7 @@ def _sweep_set_nested(cfg: dict, path: str, value):
 
 
 def _expand_sweeps(obj: dict) -> list:
-    """v0.4.6：展開 sweep 參數掃描設定（與 run_batch_backtest.py 相同格式）。
-
-    {"sweep": {"base": {...策略config...}, "param": "exit.chandelier_mult",
-               "values": [2.0, 2.5, 3.0], "name_prefix": "吊燈22x"}}
-    sweep 可為單一物件或陣列；可與 strategies（固定對照組）並存。
-    """
+    """v0.7.0：支援單參數與多參數笛卡兒積掃描。"""
     sweeps = obj.get("sweep")
     if sweeps is None:
         return []
@@ -1902,15 +1905,36 @@ def _expand_sweeps(obj: dict) -> list:
     items = []
     for si, sw in enumerate(sweeps, start=1):
         base = sw.get("base")
-        param = sw.get("param")
-        values = sw.get("values")
-        if not isinstance(base, dict) or not param or not isinstance(values, list):
-            raise ValueError(f"sweep 第 {si} 組格式錯誤：需要 base(物件)/param(字串)/values(陣列)。")
-        prefix = str(sw.get("name_prefix") or f"{param}=")
-        for v in values:
+        if not isinstance(base, dict):
+            raise ValueError(f"sweep 第 {si} 組需要 base 物件。")
+        params = sw.get("params")
+        if params is None:
+            param = sw.get("param")
+            values = sw.get("values")
+            if not param or not isinstance(values, list):
+                raise ValueError(f"sweep 第 {si} 組需要 param/values 或 params。")
+            params = {param: values}
+        if not isinstance(params, dict) or not params:
+            raise ValueError(f"sweep 第 {si} 組 params 必須是非空物件。")
+        paths = list(params.keys())
+        value_lists = [params[x] for x in paths]
+        if any(not isinstance(v, list) or not v for v in value_lists):
+            raise ValueError(f"sweep 第 {si} 組每個 params 值都必須是非空陣列。")
+        prefix = str(sw.get("name_prefix") or "")
+        template = sw.get("name_template")
+        for combo in itertools.product(*value_lists):
             cfg = copy.deepcopy(base)
-            _sweep_set_nested(cfg, param, v)
-            cfg["name"] = f"{prefix}{v}"
+            mapping = dict(zip(paths, combo))
+            for path, value in mapping.items():
+                _sweep_set_nested(cfg, path, value)
+            if template:
+                name = str(template)
+                for path, value in mapping.items():
+                    name = name.replace("{" + path + "}", str(value))
+            else:
+                suffix = "_".join(f"{path.split('.')[-1]}={value}" for path, value in mapping.items())
+                name = f"{prefix}{suffix}"
+            cfg["name"] = name
             items.append(cfg)
     return items
 
@@ -2007,11 +2031,19 @@ def _batch_compare_row(idx: int, name: str, m_: dict) -> dict:
         "獲利因子": m_.get("獲利因子", ""),
         "期望值(元/筆)": m_.get("期望值(元/筆)", ""),
         "交易次數": m_.get("交易次數", 0),
+        "核心部位交易數": m_.get("核心部位交易數", ""),
+        "強趨勢加碼交易數": m_.get("強趨勢加碼交易數", ""),
+        "平均小台等值口數": m_.get("平均小台等值口數", ""),
+        "歷史最低運作資金(元)": m_.get("歷史最低運作資金(元)", ""),
+        "期末強制平倉交易數": m_.get("期末強制平倉交易數", ""),
+        "期末強制平倉損益(元)": m_.get("期末強制平倉損益(元)", ""),
         "勝率(%)": m_.get("勝率(%)", 0),
         "最大連續虧損(次)": m_.get("最大連續虧損(次)", ""),
         "平均持倉K棒數": m_.get("平均持倉K棒數", ""),
         "資金持續未創新高交易天數": m_.get("資金持續未創新高交易天數", ""),
         "年化報酬率(%)": m_.get("年化報酬率(%)", ""),
+        "比較基準": m_.get("比較基準", ""),
+        "相對基準年化差(%點)": m_.get("相對基準年化差(%點)", ""),
         "總報酬率(%)": m_.get("總報酬率(%)", 0),
         "是否曾發生斷頭": m_.get("是否曾發生斷頭", "否"),
         "斷頭次數": m_.get("斷頭次數", 0),
@@ -2065,6 +2097,13 @@ def _run_batch_core_for_period(text: str, period_start, period_end,
                              margin_reference=SYMBOLS[symbol]["margin_reference"],
                              quantity=cost.quantity, initial_capital=batch_initial_capital,
                              market_data=data)
+        research = cfg.get("research") or {}
+        benchmark_name = str(research.get("benchmark_name") or getattr(params, "benchmark_name", "") or "")
+        benchmark_target = float(research.get("benchmark_annual_return_target") or getattr(params, "benchmark_annual_return_target", 0.0) or 0.0)
+        if benchmark_name or benchmark_target:
+            m_["比較基準"] = benchmark_name or "自訂年化目標"
+            annual = m_.get("年化報酬率(%)")
+            m_["相對基準年化差(%點)"] = round(float(annual) - benchmark_target, 2) if annual is not None else None
         tzh_ = zh_trades(trades_)
         row = _batch_compare_row(idx, name, m_)
         rows.append(row)
@@ -2080,7 +2119,7 @@ def _run_batch_core_for_period(text: str, period_start, period_end,
     batch_hash = hashlib.md5((settings_hash() + text + str(period_start) + str(period_end)).encode()).hexdigest()
     return {
         "batch_name": batch_name, "results": results, "compare": compare,
-        "cost": cost, "initial_capital": initial_capital, "symbol": symbol,
+        "cost": cost, "initial_capital": batch_initial_capital, "symbol": symbol,
         "d_start": period_start, "d_end": period_end, "n_bars": len(data),
         "hash": batch_hash, "safety_info": copy.deepcopy(local_safety),
     }
@@ -2128,7 +2167,7 @@ def _sample_judgement(in_rr: float, out_rr: float, out_pnl: float) -> str:
     return "偏弱"
 
 
-def build_in_out_compare(sample_in: dict, sample_out: dict) -> pd.DataFrame:
+def build_in_out_compare(sample_in: dict, sample_out: dict, in_label: str = "期間一", out_label: str = "期間二") -> pd.DataFrame:
     """產出樣本內 vs 樣本外對照表。"""
     in_df = sample_in["compare"].copy()
     out_df = sample_out["compare"].copy()
@@ -2167,6 +2206,8 @@ def build_in_out_compare(sample_in: dict, sample_out: dict) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    df.insert(2, "期間一名稱", in_label)
+    df.insert(3, "期間二名稱", out_label)
     priority = {
         "前後期皆穩定": 1,
         "前期普通，牛市強勢": 2,
@@ -2187,10 +2228,25 @@ def build_in_out_compare(sample_in: dict, sample_out: dict) -> pd.DataFrame:
 def execute_sample_validation():
     """v0.4.9：同一批策略一次產出前期行情／後期牛市／對照表。"""
     text = st.session_state.get("batch_strategy_json_text", "")
-    in_start = max(dmin, pd.to_datetime("2015-01-01").date())
-    in_end = min(dmax, pd.to_datetime("2023-12-31").date())
-    out_start = max(dmin, pd.to_datetime("2024-01-01").date())
-    out_end = dmax
+    try:
+        batch_obj = json.loads(text)
+    except Exception:
+        batch_obj = {}
+    periods = batch_obj.get("comparison_periods") if isinstance(batch_obj, dict) else None
+    if isinstance(periods, list) and len(periods) >= 2:
+        p1, p2 = periods[0], periods[1]
+        in_label = str(p1.get("label") or "比較期間一")
+        out_label = str(p2.get("label") or "比較期間二")
+        in_start = max(dmin, pd.to_datetime(p1.get("start") or dmin).date())
+        in_end = min(dmax, pd.to_datetime(p1.get("end") or dmax).date())
+        out_start = max(dmin, pd.to_datetime(p2.get("start") or dmin).date())
+        out_end = min(dmax, pd.to_datetime(p2.get("end") or dmax).date())
+    else:
+        in_label, out_label = "前期行情 2015～2023", "後期牛市 2024～資料末日"
+        in_start = max(dmin, pd.to_datetime("2015-01-01").date())
+        in_end = min(dmax, pd.to_datetime("2023-12-31").date())
+        out_start = max(dmin, pd.to_datetime("2024-01-01").date())
+        out_end = dmax
     if out_start > out_end:
         st.error("目前資料沒有 2024 以後的後期牛市區間。")
         return
@@ -2200,14 +2256,14 @@ def execute_sample_validation():
 
     progress = st.progress(0, text="前後期行情對照準備中...")
     sample_in = _run_batch_core_for_period(text, in_start, in_end, progress=progress,
-                                           progress_prefix="前期行情 2015～2023")
+                                           progress_prefix=in_label)
     if sample_in is None:
         return
     sample_out = _run_batch_core_for_period(text, out_start, out_end, progress=progress,
-                                            progress_prefix="後期牛市 2024～資料末日")
+                                            progress_prefix=out_label)
     if sample_out is None:
         return
-    compare = build_in_out_compare(sample_in, sample_out)
+    compare = build_in_out_compare(sample_in, sample_out, in_label, out_label)
     progress.progress(1.0, text="前後期行情對照完成")
     validation_hash = hashlib.md5((settings_hash() + text + str(in_start) + str(out_end) + "validation").encode()).hexdigest()
     st.session_state["sample_validation_bt"] = {
@@ -2220,6 +2276,8 @@ def execute_sample_validation():
         "in_end": in_end,
         "out_start": out_start,
         "out_end": out_end,
+        "in_label": in_label,
+        "out_label": out_label,
     }
 
 def build_batch_folder_name(batch: dict) -> str:
@@ -2382,8 +2440,8 @@ def build_sample_validation_overview_md(validation: dict, folder_name: str) -> s
         f"# MTX 前後期行情對照｜{validation.get('batch_name', '')}",
         "",
         f"- 建立時間：{now}",
-        f"- 前期行情期間：{validation.get('in_start')} ～ {validation.get('in_end')}（一般行情／盤整震盪期）",
-        f"- 後期牛市期間：{validation.get('out_start')} ～ {validation.get('out_end')}（2024 之後強趨勢行情）",
+        f"- {validation.get('in_label', '期間一')}：{validation.get('in_start')} ～ {validation.get('in_end')}",
+        f"- {validation.get('out_label', '期間二')}：{validation.get('out_start')} ～ {validation.get('out_end')}",
         f"- 資料夾：`{folder_name}`",
         "",
         "## 前期行情 vs 後期牛市對照表",
@@ -2468,7 +2526,7 @@ st.markdown(
     f'''<div class="app-hero">
       <div class="eyebrow">MTX STRATEGY LAB <span class="version-pill">{APP_VERSION}</span></div>
       <div class="title">台指期策略回測工作台</div>
-      <div class="desc">單次策略調整、批次研究與前後期行情對照集中在同一介面；設定變更後，只有按下執行才會重新計算。</div>
+      <div class="desc">進場、盤勢過濾、核心／加碼／防禦部位、長期持有與多參數掃描皆可由 JSON 控制；多數後續研究只需更換投放檔。</div>
     </div>''',
     unsafe_allow_html=True,
 )
@@ -2563,7 +2621,7 @@ with st.expander("目前單次策略摘要", expanded=False):
 sample_validation_bt = st.session_state.get("sample_validation_bt")
 if sample_validation_bt is not None:
     st.markdown("## 前後期行情對照結果")
-    st.caption(f"前期行情：{sample_validation_bt['in_start']} ～ {sample_validation_bt['in_end']}｜後期牛市：{sample_validation_bt['out_start']} ～ {sample_validation_bt['out_end']}")
+    st.caption(f"{sample_validation_bt.get('in_label','期間一')}：{sample_validation_bt['in_start']} ～ {sample_validation_bt['in_end']}｜{sample_validation_bt.get('out_label','期間二')}：{sample_validation_bt['out_start']} ～ {sample_validation_bt['out_end']}")
     st.dataframe(sample_validation_bt["compare"], hide_index=True, use_container_width=True)
     validation_zip_bytes = build_sample_validation_zip_bytes(sample_validation_bt)
     if st.session_state.get("sample_validation_saved_hash") != sample_validation_bt["hash"]:

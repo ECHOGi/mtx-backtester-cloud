@@ -98,6 +98,11 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
         if len(qty):
             m["平均小台等值口數"] = round(float(qty.mean()), 2)
             m["最大小台等值口數"] = round(float(qty.max()), 2)
+    if "position_regime" in trades.columns:
+        regimes = trades["position_regime"].fillna("unknown").astype(str)
+        m["核心部位交易數"] = int((regimes == "core").sum())
+        m["強趨勢加碼交易數"] = int((regimes == "core+addon").sum())
+        m["防禦部位交易數"] = int((regimes == "defensive").sum())
     if "planned_stop_risk_amount" in trades.columns:
         planned = pd.to_numeric(trades["planned_stop_risk_amount"], errors="coerce").dropna()
         if len(planned):
@@ -144,7 +149,13 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
         else:
             m["第一次斷頭日期"] = "無"
     if "required_safety_capital" in trades.columns:
-        m["歷史最低所需安全資金"] = float(round(trades["required_safety_capital"].astype(float).max(), 0))
+        # 舊欄位保留相容；它是「單筆保證金＋該筆最大反向浮動」，不是最終建議投入額。
+        m["舊式單筆安全資金參考"] = float(round(trades["required_safety_capital"].astype(float).max(), 0))
+    if "exit_reason" in trades.columns:
+        eod = trades[trades["exit_reason"] == "end_of_data"]
+        m["期末強制平倉交易數"] = int(len(eod))
+        m["期末強制平倉損益(元)"] = round(float(eod["pnl_amount"].astype(float).sum()), 0) if len(eod) else 0.0
+        m["扣除期末強制平倉後損益(元)"] = round(float(pnl.sum() - (eod["pnl_amount"].astype(float).sum() if len(eod) else 0.0)), 0)
 
     # 最大回撤（權益曲線：已實現+未實現）
     if equity is not None and not equity.empty:
@@ -156,6 +167,14 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
             capital_curve = base + eq
             m["最低帳戶權益(元)"] = round(float(capital_curve.min()), 0)
             m["最低帳戶權益率(%)"] = round(float(capital_curve.min()) / float(base) * 100, 2)
+            # v0.7.0：真正依策略每日權益與當日維持保證金反推最低起始資金。
+            # 這不再假設持倉承受大盤固定跌幅，也不把原始保證金誤稱為安全資金。
+            if "maintenance_margin_amount" in equity.columns:
+                maint = pd.to_numeric(equity["maintenance_margin_amount"], errors="coerce").fillna(0.0)
+                min_operating = (maint - eq).max()
+                m["歷史最低運作資金(元)"] = round(max(float(min_operating), 0.0), 0)
+                m["設定資金池(元)"] = round(float(base), 0)
+                m["資金池高於歷史最低運作資金(元)"] = round(float(base) - max(float(min_operating), 0.0), 0)
             rolling_peak = capital_curve.cummax()
             standard_dd_pct = ((capital_curve / rolling_peak) - 1.0) * 100
             m["策略標準最大回撤率(%)"] = round(float(standard_dd_pct.min()), 2)

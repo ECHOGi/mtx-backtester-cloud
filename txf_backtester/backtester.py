@@ -60,6 +60,7 @@ def _margin_call_line(entry_price: float, direction: int, cost: CostModel,
     v0.6.7 動態部位使用帳戶權益與維持保證金；舊策略仍沿用安全緩衝模型。
     """
     if pos is not None and p is not None and (getattr(p, "use_dynamic_position_sizing", False)
+                                                or getattr(p, "use_regime_position_sizing", False)
                                                 or getattr(p, "use_account_margin_model", False)):
         capital = _positive_float(getattr(p, "position_sizing_capital", None))
         maintenance = _positive_float(pos.get("maintenance_margin_amount"))
@@ -270,6 +271,65 @@ def _dynamic_position_spec(stop_distance_points, p, realized: float = 0.0) -> di
     return None
 
 
+def _regime_position_spec(target_units, stop_distance_points, p, realized: float = 0.0) -> dict | None:
+    """v0.7.0 核心＋條件式加碼部位。
+
+    目標部位由訊號根的盤勢條件決定；ATR只負責估算停損與壓力風險，
+    不會因高波動自動把一口核心部位縮成微台。若資金/壓力檢查不通過，
+    可依 position_allow_downsize 逐一降低微台等值單位。
+    """
+    try:
+        units = max(int(target_units or 0), 0)
+    except (TypeError, ValueError):
+        return None
+    max_units = max(int(getattr(p, "position_max_micro_units", 10) or 0), 0)
+    units = min(units, max_units)
+    if units <= 0:
+        return None
+    capital = _positive_float(getattr(p, "position_sizing_capital", None))
+    if capital is None:
+        return None
+    available_equity = max(min(capital, capital + float(realized)), 0.0)
+    if available_equity <= 0:
+        return None
+    distance = _positive_float(stop_distance_points)
+    stress_multiple = _positive_float(getattr(p, "position_stress_multiple", 4.0)) or 4.0
+    use_stress = bool(getattr(p, "position_use_stress_capital_check", True))
+    allow_downsize = bool(getattr(p, "position_allow_downsize", True))
+    while units > 0:
+        spec = _contract_mix_from_micro_units(units, p)
+        normal_risk = distance * float(spec["point_value_total"]) if distance is not None else 0.0
+        stress_risk = normal_risk * stress_multiple
+        margin_ok = float(spec["margin_amount"]) <= available_equity
+        stress_ok = (not use_stress) or (float(spec["margin_amount"]) + stress_risk <= available_equity)
+        if margin_ok and stress_ok:
+            spec.update({
+                "risk_budget_amount": None,
+                "planned_stop_risk_amount": normal_risk if distance is not None else None,
+                "stress_risk_amount": stress_risk if distance is not None else None,
+                "stress_multiple": stress_multiple if distance is not None else None,
+                "available_equity_at_entry": available_equity,
+                "position_sizing_mode": "core_regime",
+                "requested_micro_units": int(target_units or 0),
+            })
+            return spec
+        if not allow_downsize:
+            return None
+        units -= 1
+    return None
+
+
+def _confirmed_exit(pos: dict, key: str, raw_hit: bool, required_bars: int) -> bool:
+    """回傳收盤型出場是否已連續確認足夠根數。"""
+    required = max(int(required_bars or 1), 1)
+    count_key = f"_{key}_confirm_count"
+    if raw_hit:
+        pos[count_key] = int(pos.get(count_key, 0)) + 1
+    else:
+        pos[count_key] = 0
+    return int(pos[count_key]) >= required
+
+
 def _profit_tier_mode(p) -> str:
     mode = str(getattr(p, "profit_tier_threshold_mode", "amount") or "amount").lower()
     return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "amount"
@@ -358,7 +418,14 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 missing_atr_skipped_entries += 1
                 skip_entry = True
 
-            if getattr(p, "use_dynamic_position_sizing", False):
+            if getattr(p, "use_regime_position_sizing", False):
+                target_units = pending.get("target_micro_units")
+                position_spec = None if skip_entry else _regime_position_spec(
+                    target_units, planned_stop_points, p, realized)
+                if not skip_entry and position_spec is None:
+                    dynamic_size_skipped_entries += 1
+                    skip_entry = True
+            elif getattr(p, "use_dynamic_position_sizing", False):
                 position_spec = None if skip_entry else _dynamic_position_spec(planned_stop_points, p, realized)
                 if not skip_entry and position_spec is None:
                     dynamic_size_skipped_entries += 1
@@ -390,6 +457,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_i": pending["signal_i"],
                     "signal_date": pending["signal_date"],
                     "entry_reason": pending["entry_reason"],
+                    "position_regime": pending.get("position_regime", "fixed"),
+                    "requested_micro_units": pending.get("target_micro_units"),
                     # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
                     "entry_atr": entry_atr,
                     "planned_stop_points": planned_stop_points,
@@ -475,6 +544,10 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     exit_price = margin_line
                     exit_reason = "margin_call"
 
+            holding_now = i - pos["entry_i"] + 1
+            min_hold = max(int(getattr(p, "minimum_holding_bars", 0) or 0), 0)
+            discretionary_exit_allowed = holding_now > min_hold
+
             # d) 吊燈出場（收盤確認）
             # v0.5.0：支援「獲利分段吊燈」：依目前浮盈金額選擇不同吊燈倍數。
             if exit_price is None and (p.use_chandelier or getattr(p, "use_profit_tier_chandelier", False)):
@@ -497,12 +570,15 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
 
                 if d == 1:
                     ch = row.get(long_col)
-                    if pd.notna(ch) and row["close"] < ch:
-                        exit_price, exit_reason = row["close"], ch_label
+                    raw_ch_hit = bool(pd.notna(ch) and row["close"] < ch)
                 else:
                     ch = row.get(short_col)
-                    if pd.notna(ch) and row["close"] > ch:
-                        exit_price, exit_reason = row["close"], ch_label
+                    raw_ch_hit = bool(pd.notna(ch) and row["close"] > ch)
+                ch_ok = _confirmed_exit(
+                    pos, "chandelier", raw_ch_hit and discretionary_exit_allowed,
+                    getattr(p, "chandelier_exit_confirmation_bars", 1))
+                if exit_price is None and ch_ok:
+                    exit_price, exit_reason = row["close"], ch_label
 
             # e) MACD 反向（收盤確認）：多單 hist<0 出場、空單 hist>0 出場
             # v0.5.1：若已達指定最高浮盈，可排除 MACD 反向，避免獲利擴大後被短期反向訊號提前洗出。
@@ -516,19 +592,29 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 if block_at > 0 and ref_value >= block_at:
                     macd_reverse_blocked = True
 
-            if exit_price is None and p.use_macd_reverse and (not macd_reverse_blocked) and "macd_hist" in df.columns:
+            raw_macd_hit = False
+            if p.use_macd_reverse and (not macd_reverse_blocked) and "macd_hist" in df.columns:
                 h = row["macd_hist"]
-                if pd.notna(h) and ((d == 1 and h < 0) or (d == -1 and h > 0)):
-                    exit_price, exit_reason = row["close"], "macd_reverse"
+                raw_macd_hit = bool(pd.notna(h) and ((d == 1 and h < 0) or (d == -1 and h > 0)))
+            macd_ok = _confirmed_exit(
+                pos, "macd", raw_macd_hit and discretionary_exit_allowed,
+                getattr(p, "macd_exit_confirmation_bars", 1))
+            if exit_price is None and macd_ok:
+                exit_price, exit_reason = row["close"], "macd_reverse"
 
             # e2) 條件出場（收盤確認；v0.3.4 新增、可選）
             #     只有 params.use_signal_exit=True 且策略層有產生
             #     exit_long_signal / exit_short_signal 欄位時才會啟用，
             #     否則完全不影響既有出場行為（self_check 8 cases 不變）。
-            if exit_price is None and getattr(p, "use_signal_exit", False):
+            raw_signal_exit = False
+            if getattr(p, "use_signal_exit", False):
                 sig_col = "exit_long_signal" if d == 1 else "exit_short_signal"
-                if sig_col in df.columns and bool(row.get(sig_col, False)):
-                    exit_price, exit_reason = row["close"], "signal_exit"
+                raw_signal_exit = bool(sig_col in df.columns and row.get(sig_col, False))
+            signal_ok = _confirmed_exit(
+                pos, "signal", raw_signal_exit and discretionary_exit_allowed,
+                getattr(p, "signal_exit_confirmation_bars", 1))
+            if exit_price is None and signal_ok:
+                exit_price, exit_reason = row["close"], "signal_exit"
 
             # f) 資料結束強制平倉
             if exit_price is None and i == n - 1:
@@ -569,6 +655,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "position_margin_amount": round(float(pos.get("margin_amount", 0.0)), 1),
                 "maintenance_margin_amount": round(float(pos.get("maintenance_margin_amount", 0.0)), 1),
                 "position_sizing_mode": str(pos.get("position_sizing_mode", "fixed")),
+                "position_regime": str(pos.get("position_regime", "fixed")),
+                "requested_micro_units": int(pos.get("requested_micro_units") or pos.get("micro_units", 0)),
                 "pnl_points": round(pts, 2),
                 "pnl_amount": round(amount, 1),
                 "holding_bars": i - pos["entry_i"] + 1,
@@ -609,6 +697,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_date": dt,
                     "entry_reason": _entry_reason(row, "long"),
                     "signal_atr": _positive_float(row.get("atr")),
+                    "target_micro_units": int(row.get("long_position_micro_units", 0) or 0)
+                        if getattr(p, "use_regime_position_sizing", False) else None,
+                    "position_regime": str(row.get("long_position_regime", "fixed")),
                 }
             elif bool(row["short_entry"]):
                 pending = {
@@ -617,6 +708,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_date": dt,
                     "entry_reason": _entry_reason(row, "short"),
                     "signal_atr": _positive_float(row.get("atr")),
+                    "target_micro_units": int(row.get("short_position_micro_units", 0) or 0)
+                        if getattr(p, "use_regime_position_sizing", False) else None,
+                    "position_regime": str(row.get("short_position_regime", "fixed")),
                 }
 
         # ---- 5) 更新移動停損追蹤極值（本根結束後生效，避免盤中未來函數）----
@@ -641,6 +735,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         equity_rows.append({
             "datetime": dt,
             "equity": realized + unreal,
+            "position_margin_amount": float(pos.get("margin_amount", 0.0)) if pos is not None else 0.0,
+            "maintenance_margin_amount": float(pos.get("maintenance_margin_amount", 0.0)) if pos is not None else 0.0,
+            "open_position_micro_units": int(pos.get("micro_units", 0)) if pos is not None else 0,
             "risk_cap_skipped_entries": risk_cap_skipped_entries,
             "missing_atr_skipped_entries": missing_atr_skipped_entries,
             "dynamic_size_skipped_entries": dynamic_size_skipped_entries,
@@ -653,7 +750,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "entry_price", "exit_price", "quantity",
         "small_quantity", "micro_quantity", "position_micro_units",
         "point_value_total", "position_margin_amount", "maintenance_margin_amount",
-        "position_sizing_mode",
+        "position_sizing_mode", "position_regime", "requested_micro_units",
         "pnl_points", "pnl_amount", "holding_bars",
         "exit_reason", "entry_reason",
         "max_adverse_points", "max_adverse_amount",

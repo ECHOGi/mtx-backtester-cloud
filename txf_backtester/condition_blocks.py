@@ -20,6 +20,7 @@ JSON 用法（見 strategies.py 的策略 JSON 結構）：
 """
 import json
 
+import numpy as np
 import pandas as pd
 
 import indicators as ind
@@ -302,14 +303,116 @@ def volume_above_prev(df, multiplier=1.5, **_):
     return df["volume"] > df["volume"].shift(1) * float(multiplier)
 
 
+
+
+# ---------- v0.7.0 通用研究條件 ----------
+@register("normalized_atr_above")
+def normalized_atr_above(df, value=2.0, period=14, **_):
+    """ATR / close × 100 高於指定百分比。"""
+    ratio = ind.atr(df, int(period)) / df["close"].replace(0, np.nan) * 100.0
+    return ratio > float(value)
+
+
+@register("normalized_atr_below")
+def normalized_atr_below(df, value=2.0, period=14, **_):
+    """ATR / close × 100 低於指定百分比。"""
+    ratio = ind.atr(df, int(period)) / df["close"].replace(0, np.nan) * 100.0
+    return ratio < float(value)
+
+
+@register("atr_percentile_above")
+def atr_percentile_above(df, value=70, period=14, lookback=252, **_):
+    """目前 ATR 在過去 lookback 根中的百分位高於指定值。"""
+    a = ind.atr(df, int(period))
+    lb = max(int(lookback), 2)
+    pct = a.rolling(lb, min_periods=max(20, lb // 5)).apply(
+        lambda x: float(np.sum(x <= x[-1])) / len(x) * 100.0, raw=True)
+    return pct > float(value)
+
+
+@register("atr_percentile_below")
+def atr_percentile_below(df, value=30, period=14, lookback=252, **_):
+    """目前 ATR 在過去 lookback 根中的百分位低於指定值。"""
+    a = ind.atr(df, int(period))
+    lb = max(int(lookback), 2)
+    pct = a.rolling(lb, min_periods=max(20, lb // 5)).apply(
+        lambda x: float(np.sum(x <= x[-1])) / len(x) * 100.0, raw=True)
+    return pct < float(value)
+
+
+@register("ma_slope_pct_above")
+def ma_slope_pct_above(df, ma_type="SMA", period=120, lookback=20, value=0.0, **_):
+    """均線在 lookback 根內的百分比斜率高於門檻。"""
+    m = _ma(df, ma_type, period)
+    slope = (m / m.shift(max(int(lookback), 1)) - 1.0) * 100.0
+    return slope > float(value)
+
+
+@register("ma_slope_pct_below")
+def ma_slope_pct_below(df, ma_type="SMA", period=120, lookback=20, value=0.0, **_):
+    """均線在 lookback 根內的百分比斜率低於門檻。"""
+    m = _ma(df, ma_type, period)
+    slope = (m / m.shift(max(int(lookback), 1)) - 1.0) * 100.0
+    return slope < float(value)
+
+
+@register("close_drawdown_from_high_above")
+def close_drawdown_from_high_above(df, lookback=252, value=-10.0, **_):
+    """收盤相對過去高點回撤率高於門檻，例如 > -10%。"""
+    high = df["close"].rolling(max(int(lookback), 2), min_periods=2).max()
+    dd = (df["close"] / high - 1.0) * 100.0
+    return dd > float(value)
+
+
+@register("close_drawdown_from_high_below")
+def close_drawdown_from_high_below(df, lookback=252, value=-10.0, **_):
+    """收盤相對過去高點回撤率低於門檻，例如 < -10%。"""
+    high = df["close"].rolling(max(int(lookback), 2), min_periods=2).max()
+    dd = (df["close"] / high - 1.0) * 100.0
+    return dd < float(value)
+
+
+@register("close_breakout_high")
+def close_breakout_high(df, lookback=60, **_):
+    """收盤突破前 lookback 根最高收盤。"""
+    prior_high = df["close"].shift(1).rolling(max(int(lookback), 2), min_periods=2).max()
+    return df["close"] > prior_high
+
+
+@register("close_breakdown_low")
+def close_breakdown_low(df, lookback=60, **_):
+    """收盤跌破前 lookback 根最低收盤。"""
+    prior_low = df["close"].shift(1).rolling(max(int(lookback), 2), min_periods=2).min()
+    return df["close"] < prior_low
+
+
 # ---------- 組合器 ----------
 def evaluate_condition(df: pd.DataFrame, spec: dict) -> pd.Series:
-    """spec = {"type": 條件名, ...其餘為該條件參數}"""
-    spec = dict(spec)
+    """spec = {"type": 條件名, ...其餘為該條件參數}。
+
+    v0.7.0 另支援可巢狀的通用條件：
+    - all_recent：指定條件連續 bars 根皆成立
+    - any_recent：指定條件最近 bars 根至少成立一次
+    - not：反向條件
+    """
+    spec = dict(spec or {})
     ctype = spec.pop("type", None)
+    if ctype in {"all_recent", "any_recent", "not"}:
+        inner = spec.get("condition") or spec.get("inner")
+        if not isinstance(inner, dict):
+            raise ValueError(f"{ctype} 需要 condition 物件。")
+        base = evaluate_condition(df, inner).fillna(False)
+        if ctype == "not":
+            return (~base).fillna(False)
+        bars = max(int(spec.get("bars", 2)), 1)
+        count = base.astype(int).rolling(bars, min_periods=bars).sum()
+        if ctype == "all_recent":
+            return (count >= bars).fillna(False)
+        return (count >= 1).fillna(False)
     if ctype not in CONDITIONS:
+        extras = ["all_recent", "any_recent", "not"]
         raise ValueError(
-            f"未知條件 '{ctype}'。可用條件：{sorted(CONDITIONS.keys())}")
+            f"未知條件 '{ctype}'。可用條件：{sorted(CONDITIONS.keys()) + extras}")
     return CONDITIONS[ctype](df, **spec).fillna(False)
 
 

@@ -1,0 +1,102 @@
+{
+  "batch_name": "通用研究策略範例",
+  "initial_capital": 500000,
+  "comparison_periods": [
+    {"label": "期間一", "start": "2015-01-05", "end": "2020-12-31"},
+    {"label": "期間二", "start": "2021-01-01", "end": "2026-06-30"}
+  ],
+  "strategies": [
+    {
+      "name": "核心1口_強趨勢第2口_長期結構出場",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "long",
+      "entry_long": {
+        "logic": "AND",
+        "conditions": [
+          {"type": "ma_bullish_alignment", "ma_type": "SMA", "periods": [20, 60, 120]},
+          {"type": "macd_hist_cross_up", "fast": 12, "slow": 26, "signal": 9}
+        ]
+      },
+      "entry_short": [],
+      "entry_long_filter": {
+        "logic": "AND",
+        "conditions": [
+          {"type": "ma_slope_pct_above", "ma_type": "SMA", "period": 120, "lookback": 20, "value": 0.0}
+        ]
+      },
+      "position_policy": {
+        "use_regime_position_sizing": true,
+        "position_sizing_capital": 500000,
+        "position_core_micro_units": 5,
+        "position_addon_micro_units": 5,
+        "position_defensive_micro_units": 2,
+        "position_max_micro_units": 10,
+        "position_stress_multiple": 4.0,
+        "position_use_stress_capital_check": true,
+        "position_allow_downsize": true,
+        "long_addon_block": {
+          "logic": "AND",
+          "conditions": [
+            {"type": "ma_bullish_alignment", "ma_type": "SMA", "periods": [20, 60, 120]},
+            {"type": "close_above_ma", "ma_type": "SMA", "period": 120},
+            {"type": "ma_slope_pct_above", "ma_type": "SMA", "period": 120, "lookback": 20, "value": 0.5},
+            {"type": "macd_dif_above_zero", "fast": 12, "slow": 26, "signal": 9}
+          ]
+        },
+        "long_defensive_block": {
+          "logic": "AND",
+          "conditions": [
+            {"type": "ma_slope_pct_below", "ma_type": "SMA", "period": 120, "lookback": 20, "value": -1.0}
+          ]
+        }
+      },
+      "holding_policy": {
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 3,
+        "chandelier_exit_confirmation_bars": 2
+      },
+      "exit": {
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 0.75,
+        "use_macd_reverse": false,
+        "use_profit_tier_chandelier": false,
+        "use_chandelier": false,
+        "use_signal_exit": true,
+        "position_micro_point_value": 10,
+        "position_small_point_value": 50,
+        "position_micro_margin": 32000,
+        "position_small_margin": 159000,
+        "position_micro_maintenance_margin": 24400,
+        "position_small_maintenance_margin": 122000,
+        "position_micro_fee": 12,
+        "position_small_fee": 20
+      },
+      "exit_long_block": {
+        "logic": "OR",
+        "conditions": [
+          {
+            "type": "all_recent",
+            "bars": 3,
+            "condition": {"type": "close_below_ma", "ma_type": "SMA", "period": 120}
+          },
+          {
+            "type": "all_recent",
+            "bars": 3,
+            "condition": {"type": "ma_slope_pct_below", "ma_type": "SMA", "period": 120, "lookback": 20, "value": -1.0}
+          }
+        ]
+      },
+      "research": {
+        "benchmark_name": "0050正二",
+        "benchmark_annual_return_target": 0.0
+      },
+      "display": {
+        "atr_period": 14,
+        "ma_periods": [5, 10, 20, 60, 120, 240]
+      }
+    }
+  ]
+}

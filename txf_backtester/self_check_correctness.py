@@ -5,6 +5,7 @@ import pandas as pd
 from backtester import CostModel, run_backtest
 from correctness import summarize_validation, validate_trades
 from strategies import StrategyParams
+from condition_blocks import evaluate_condition
 
 
 def base_params(**kw):
@@ -425,6 +426,85 @@ def main():
          "risk_budget_amount": 50000.0, "stress_risk_amount": 180000.0},
         cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
     ))
+
+    # 26. v0.7.0 核心部位：高 ATR 不會因波動變大而自動縮成微台。
+    passed.append(run_case(
+        "regime_core_keeps_one_mtx_in_high_atr",
+        [
+            {"datetime": "2025-01-01", "open": 9000, "high": 9100, "low": 8900, "close": 9050,
+             "atr": 1000, "long_entry": True, "long_position_micro_units": 5,
+             "long_position_regime": "core"},
+            {"datetime": "2025-01-02", "open": 10000, "high": 10100, "low": 9990, "close": 10050},
+        ],
+        base_params(
+            use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75,
+            use_regime_position_sizing=True, position_sizing_capital=500000,
+            position_stress_multiple=4.0, position_max_micro_units=10,
+        ),
+        {"quantity": 1.0, "small_quantity": 1, "micro_quantity": 0,
+         "position_micro_units": 5, "position_regime": "core",
+         "planned_stop_points": 750.0, "planned_stop_risk_amount": 37500.0},
+        cost=CostModel(point_value=50, fee=20, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
+    # 27. 強趨勢條件要求第二層部位，低風險時可配置2口小台。
+    passed.append(run_case(
+        "regime_addon_scales_to_two_mtx",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True, "long_position_micro_units": 10,
+             "long_position_regime": "core+addon"},
+            {"datetime": "2025-01-02", "open": 100, "high": 110, "low": 99, "close": 108},
+        ],
+        base_params(
+            use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75,
+            use_regime_position_sizing=True, position_sizing_capital=500000,
+            position_stress_multiple=4.0, position_max_micro_units=10,
+        ),
+        {"quantity": 2.0, "small_quantity": 2, "position_micro_units": 10,
+         "position_regime": "core+addon"},
+        cost=CostModel(point_value=50, fee=20, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
+    # 28. 最短持有期：MACD 反向在持有滿3根前不得讓長期部位離場。
+    passed.append(run_case(
+        "minimum_holding_bars_delays_macd_exit",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "macd_hist": 1, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 105, "low": 99, "close": 103, "macd_hist": -1},
+            {"datetime": "2025-01-03", "open": 103, "high": 106, "low": 101, "close": 102, "macd_hist": -1},
+            {"datetime": "2025-01-04", "open": 102, "high": 104, "low": 100, "close": 101, "macd_hist": -1},
+        ],
+        base_params(use_macd_reverse=True, minimum_holding_bars=2),
+        {"exit_price": 101.0, "exit_reason": "macd_reverse", "holding_bars": 3},
+    ))
+
+    # 29. 收盤出場連續確認：條件需連續2根才離場。
+    passed.append(run_case(
+        "signal_exit_requires_two_confirmations",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 105, "low": 99, "close": 103, "exit_long_signal": True},
+            {"datetime": "2025-01-03", "open": 103, "high": 106, "low": 101, "close": 102, "exit_long_signal": True},
+        ],
+        base_params(use_signal_exit=True, signal_exit_confirmation_bars=2),
+        {"exit_price": 102.0, "exit_reason": "signal_exit", "holding_bars": 2},
+    ))
+
+    # 30. 通用巢狀條件 all_recent：最近3根皆成立才為真。
+    df_cond = df_from_rows([
+        {"datetime": "2025-01-01", "open": 10, "high": 11, "low": 9, "close": 10},
+        {"datetime": "2025-01-02", "open": 11, "high": 12, "low": 10, "close": 11},
+        {"datetime": "2025-01-03", "open": 12, "high": 13, "low": 11, "close": 12},
+        {"datetime": "2025-01-04", "open": 13, "high": 14, "low": 12, "close": 13},
+    ])
+    cond = evaluate_condition(df_cond, {
+        "type": "all_recent", "bars": 3,
+        "condition": {"type": "ma_slope_up", "ma_type": "SMA", "period": 1},
+    })
+    assert bool(cond.iloc[-1]) is True and bool(cond.iloc[1]) is False
+    passed.append("generic_all_recent_condition")
 
     print("PASS", len(passed), "cases")
     for name in passed:

@@ -105,6 +105,21 @@ class StrategyParams:
     position_small_maintenance_margin: float = 122000.0
     position_micro_fee: float = 12.0
     position_small_fee: float = 20.0
+    # v0.7.0：盤勢條件式部位。核心部位不因 ATR 變大而縮小；
+    # 只有強趨勢條件成立才增加第二層部位，防禦條件可減碼或略過。
+    use_regime_position_sizing: bool = False
+    position_core_micro_units: int = 5
+    position_addon_micro_units: int = 5
+    position_defensive_micro_units: int = 0
+    position_allow_downsize: bool = True
+    # v0.7.0：長期持有控制。固定停損與斷頭不受最短持有期限制。
+    minimum_holding_bars: int = 0
+    chandelier_exit_confirmation_bars: int = 1
+    macd_exit_confirmation_bars: int = 1
+    signal_exit_confirmation_bars: int = 1
+    # 研究基準目標：只做比較輸出，不影響交易。
+    benchmark_name: str = ""
+    benchmark_annual_return_target: float = 0.0
     use_take_profit: bool = False
     take_profit_points: float = 200.0
     use_trailing_stop: bool = False
@@ -150,6 +165,13 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "position_micro_margin", "position_small_margin",
                "position_micro_maintenance_margin", "position_small_maintenance_margin",
                "position_micro_fee", "position_small_fee",
+               "use_regime_position_sizing",
+               "position_core_micro_units", "position_addon_micro_units",
+               "position_defensive_micro_units", "position_allow_downsize",
+               "minimum_holding_bars",
+               "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
+               "signal_exit_confirmation_bars",
+               "benchmark_name", "benchmark_annual_return_target",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]
 
@@ -208,6 +230,11 @@ def params_from_config(cfg: dict, base: StrategyParams = None) -> StrategyParams
     for k, v in (cfg.get("display") or {}).items():
         if k in d:
             d[k] = v
+    # v0.7.0：位置政策與研究設定也可放在頂層，避免每次新增欄位都改 JSON 結構。
+    for section in ("position_policy", "research", "holding_policy"):
+        for k, v in (cfg.get(section) or {}).items():
+            if k in d:
+                d[k] = v
     # 從進場條件回填示範策略參數（若存在對應條件）
     d["ma_filter_enabled"] = False
     _el = cfg.get("entry_long") or {}
@@ -338,6 +365,48 @@ def evaluate_entry(out: pd.DataFrame, spec):
     return evaluate_block_with_reasons(out, spec)
 
 
+def _apply_optional_filter(out: pd.DataFrame, signal: pd.Series, block) -> pd.Series:
+    """把選用的盤勢過濾條件套在進場訊號上；未設定時完全相容舊策略。"""
+    if not block:
+        return signal.fillna(False)
+    filt, _ = evaluate_combo(out, block)
+    return (signal.fillna(False) & filt.fillna(False)).fillna(False)
+
+
+def _position_units_for_direction(out: pd.DataFrame, cfg: dict, p: StrategyParams, direction: str):
+    """依 JSON 盤勢條件產生每根訊號可使用的微台等值單位與盤勢標籤。
+
+    優先順序：skip > defensive > addon > core。
+    1口小台=5單位；2口小台=10單位。這裡只決定目標部位，
+    保證金與跳空壓力仍由 backtester 在實際進場時檢查。
+    """
+    idx = out.index
+    core = max(int(getattr(p, "position_core_micro_units", 5) or 0), 0)
+    addon = max(int(getattr(p, "position_addon_micro_units", 5) or 0), 0)
+    defensive = max(int(getattr(p, "position_defensive_micro_units", 0) or 0), 0)
+    max_units = max(int(getattr(p, "position_max_micro_units", 10) or 0), 0)
+    units = pd.Series(min(core, max_units), index=idx, dtype="int64")
+    label = pd.Series("core", index=idx, dtype="object")
+    policy = cfg.get("position_policy") or {}
+    prefix = "long" if direction == "long" else "short"
+    addon_block = policy.get(f"{prefix}_addon_block")
+    defensive_block = policy.get(f"{prefix}_defensive_block")
+    skip_block = policy.get(f"{prefix}_skip_block")
+    if addon_block:
+        sig, _ = evaluate_combo(out, addon_block)
+        units.loc[sig] = min(core + addon, max_units)
+        label.loc[sig] = "core+addon"
+    if defensive_block:
+        sig, _ = evaluate_combo(out, defensive_block)
+        units.loc[sig] = min(defensive, max_units)
+        label.loc[sig] = "defensive"
+    if skip_block:
+        sig, _ = evaluate_combo(out, skip_block)
+        units.loc[sig] = 0
+        label.loc[sig] = "skip"
+    return units, label
+
+
 def run_strategy_config(df: pd.DataFrame, cfg: dict,
                         p: StrategyParams = None) -> pd.DataFrame:
     """
@@ -352,10 +421,25 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
     long_sig, long_reasons = evaluate_entry(out, cfg.get("entry_long"))
     short_sig, short_reasons = evaluate_entry(out, cfg.get("entry_short"))
 
+    # v0.7.0：盤勢過濾與原始進場條件分離。可在不改策略積木的情況下
+    # 比較「相同訊號、不同市場狀態」；未提供 filter 時與舊版完全一致。
+    long_sig = _apply_optional_filter(out, long_sig, cfg.get("entry_long_filter"))
+    short_sig = _apply_optional_filter(out, short_sig, cfg.get("entry_short_filter"))
+
     out["long_entry"] = long_sig if direction in ("long", "both") else False
     out["short_entry"] = short_sig if direction in ("short", "both") else False
     out["long_entry_reasons"] = long_reasons.where(out["long_entry"], "")
     out["short_entry_reasons"] = short_reasons.where(out["short_entry"], "")
+
+    # v0.7.0：核心＋條件式加碼部位。只在進場訊號根決定目標部位，
+    # 不使用未完成的下一根資料，也不改變進出場訊號。
+    if getattr(p, "use_regime_position_sizing", False):
+        lu, ll = _position_units_for_direction(out, cfg, p, "long")
+        su, sl = _position_units_for_direction(out, cfg, p, "short")
+        out["long_position_micro_units"] = lu
+        out["short_position_micro_units"] = su
+        out["long_position_regime"] = ll
+        out["short_position_regime"] = sl
 
     # v0.3.4 條件出場：策略層產生訊號欄位，backtester 依 use_signal_exit 取用
     elb, esb = cfg.get("exit_long_block"), cfg.get("exit_short_block")

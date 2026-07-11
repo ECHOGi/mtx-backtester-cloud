@@ -35,6 +35,7 @@ def _margin_call_line(entry_price: float, direction: int, cost: CostModel, p: An
     # 動態部位採帳戶權益/維持保證金模型；逐筆驗證另由交易金額與斷頭結果檢查，
     # 不套用舊版固定安全緩衝線。
     if p is not None and (getattr(p, "use_dynamic_position_sizing", False)
+                          or getattr(p, "use_regime_position_sizing", False)
                           or getattr(p, "use_account_margin_model", False)):
         return None
     if not getattr(cost, "use_margin_call_check", False):
@@ -125,6 +126,9 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
     # 下一根開盤進場，因此當時能確定的 ATR 只能來自訊號根（entry_i - 1）。
     entry_atr = _positive_float(df.iloc[entry_i - 1].get("atr")) if entry_i > 0 else None
     n = len(df)
+    ch_count = 0
+    macd_count = 0
+    signal_count = 0
 
     for i in range(entry_i, n):
         row = df.iloc[i]
@@ -197,14 +201,22 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
             else:
                 long_col = "chandelier_long"
                 short_col = "chandelier_short"
+            holding_now = i - entry_i + 1
+            min_hold = max(int(getattr(p, "minimum_holding_bars", 0) or 0), 0)
+            discretionary_ok = holding_now > min_hold
             if d == 1:
                 ch = row.get(long_col)
-                if pd.notna(ch) and row["close"] < ch:
-                    exit_price, exit_reason = row["close"], exit_label
+                raw_ch = bool(pd.notna(ch) and row["close"] < ch)
             else:
                 ch = row.get(short_col)
-                if pd.notna(ch) and row["close"] > ch:
-                    exit_price, exit_reason = row["close"], exit_label
+                raw_ch = bool(pd.notna(ch) and row["close"] > ch)
+            ch_count = ch_count + 1 if raw_ch and discretionary_ok else 0
+            if ch_count >= max(int(getattr(p, "chandelier_exit_confirmation_bars", 1) or 1), 1):
+                exit_price, exit_reason = row["close"], exit_label
+
+        holding_now = i - entry_i + 1
+        min_hold = max(int(getattr(p, "minimum_holding_bars", 0) or 0), 0)
+        discretionary_ok = holding_now > min_hold
 
         macd_reverse_blocked = False
         if exit_price is None and getattr(p, "use_profit_scaled_macd_exclusion", False):
@@ -215,15 +227,21 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
                         else float(getattr(p, "macd_reverse_exclude_profit_amount", 0.0) or 0.0))
             macd_reverse_blocked = block_at > 0 and reference_value >= block_at
 
-        if exit_price is None and p.use_macd_reverse and (not macd_reverse_blocked) and "macd_hist" in df.columns:
+        raw_macd = False
+        if p.use_macd_reverse and (not macd_reverse_blocked) and "macd_hist" in df.columns:
             h = row["macd_hist"]
-            if pd.notna(h) and ((d == 1 and h < 0) or (d == -1 and h > 0)):
-                exit_price, exit_reason = row["close"], "macd_reverse"
+            raw_macd = bool(pd.notna(h) and ((d == 1 and h < 0) or (d == -1 and h > 0)))
+        macd_count = macd_count + 1 if raw_macd and discretionary_ok else 0
+        if exit_price is None and macd_count >= max(int(getattr(p, "macd_exit_confirmation_bars", 1) or 1), 1):
+            exit_price, exit_reason = row["close"], "macd_reverse"
 
-        if exit_price is None and getattr(p, "use_signal_exit", False):
+        raw_signal = False
+        if getattr(p, "use_signal_exit", False):
             sig_col = "exit_long_signal" if d == 1 else "exit_short_signal"
-            if sig_col in df.columns and bool(row.get(sig_col, False)):
-                exit_price, exit_reason = row["close"], "signal_exit"
+            raw_signal = bool(sig_col in df.columns and row.get(sig_col, False))
+        signal_count = signal_count + 1 if raw_signal and discretionary_ok else 0
+        if exit_price is None and signal_count >= max(int(getattr(p, "signal_exit_confirmation_bars", 1) or 1), 1):
+            exit_price, exit_reason = row["close"], "signal_exit"
 
         if exit_price is None and i == n - 1:
             exit_price, exit_reason = row["close"], "end_of_data"
@@ -312,7 +330,7 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
         if "small_quantity" in t and "micro_quantity" in t:
             small_qty = int(t.get("small_quantity", 0) or 0)
             micro_qty = int(t.get("micro_quantity", 0) or 0)
-            if str(t.get("position_sizing_mode", "fixed")) == "dynamic_risk":
+            if str(t.get("position_sizing_mode", "fixed")) in {"dynamic_risk", "core_regime"}:
                 fee_per_side = (small_qty * float(getattr(p, "position_small_fee", 20.0))
                                 + micro_qty * float(getattr(p, "position_micro_fee", 12.0)))
             else:
