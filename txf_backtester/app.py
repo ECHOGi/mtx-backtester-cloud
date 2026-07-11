@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.6.1 手機批次操作修正版）。
+app.py - 台指期回測工具 Streamlit 介面（v0.6.4 UI 重整版）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -23,6 +23,10 @@ import re
 import urllib.parse
 import urllib.request
 import zipfile
+
+
+APP_VERSION = "v0.6.4"
+APP_RELEASE_NAME = "UI 重整版"
 
 
 def _safe_filename_part(text: str) -> str:
@@ -70,57 +74,145 @@ from strategies import (StrategyParams, params_from_config,
 from utils import df_to_csv_bytes, load_params_json, params_to_json_str
 
 # ---------------- 頁面與樣式 ----------------
-st.set_page_config(page_title="台指期回測工具", layout="wide",
+st.set_page_config(page_title=f"MTX 台指期回測 {APP_VERSION}", layout="wide",
                    initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-.stApp { background-color: #d9e2ea; }
-.block-container { padding-top: 2.0rem; max-width: 1500px; }
-[data-testid="stHeader"] { height: 2.0rem; }
-[data-testid="stHeader"] > div { display: none; }
-[data-testid="stToolbar"] { display: none; }
-[data-testid="stDecoration"] { display: none; }
-[data-testid="stSidebar"] { background-color: #16283c; }
-[data-testid="stSidebar"] label, [data-testid="stSidebar"] p,
-[data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] span,
-[data-testid="stSidebar"] summary { color: #d8e4ef !important; }
-[data-testid="stSidebar"] hr { border-color: #33506b; }
-.metric-card { background:#f3f7fa; border:1px solid #c2d1dd; border-radius:12px;
-  padding:10px 6px; text-align:center; box-shadow:0 1px 3px rgba(25,45,65,.18); }
-.metric-card .lbl { font-size:.78rem; color:#5a6c7d; margin-bottom:2px; }
-.metric-card .val { font-size:1.18rem; font-weight:700; color:#1c2b3a; }
-.metric-card .pos { color:#c0392b; }
-.metric-card .neg { color:#1e8449; }
-.summary-card { background:#f3f7fa; border:1px solid #b8c9d8; border-radius:14px;
-  padding:14px 18px; margin: 0 0 14px 0; box-shadow:0 1px 4px rgba(25,45,65,.16); }
-.summary-card .title { font-size:1.08rem; font-weight:800; color:#1c2b3a; margin-bottom:8px; }
+:root {
+  --ink: #334155;
+  --muted: #64748b;
+  --paper: #f7faf9;
+  --panel: #ffffff;
+  --sidebar: #fff8f0;
+  --line: #f0d8c7;
+  --accent: #e58a5b;
+  --accent-dark: #c96b3d;
+  --accent-soft: #fce8da;
+  --primary: #467f70;
+  --primary-dark: #35685b;
+  --success: #467f70;
+  --danger: #c85d54;
+}
+.stApp { background: var(--paper); color: var(--ink); }
+.block-container { padding-top: 1.25rem; max-width: 1500px; }
+[data-testid="stHeader"] { height: 1.5rem; background: transparent; }
+[data-testid="stHeader"] > div, [data-testid="stToolbar"], [data-testid="stDecoration"] { display: none; }
+h1, h2, h3 { color: var(--ink); letter-spacing: -.01em; }
+p, label, .stMarkdown { color: var(--ink); }
+[data-testid="stSidebar"] {
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+}
+[data-testid="stSidebar"] > div:first-child { padding-top: .65rem; }
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] summary { color: #3f4b55 !important; }
+[data-testid="stSidebar"] small,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
+[data-testid="stSidebar"] hr { border-color: var(--line); margin: .65rem 0; }
+[data-testid="stSidebar"] [data-baseweb="input"] > div,
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+  background: #ffffff !important;
+  border-color: #e8cdb9 !important;
+  color: var(--ink) !important;
+}
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] textarea { color: var(--ink) !important; }
+[data-testid="stSidebar"] [data-baseweb="input"] > div,
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] { border-radius: 12px !important; }
+[data-testid="stSidebar"] [role="radiogroup"] { gap: .25rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label { background: rgba(255,255,255,.72); border: 1px solid var(--line); border-radius: 999px; padding: .25rem .55rem; }
+[data-testid="stSidebar"] [data-testid="stCheckbox"] label { border-radius: 10px; }
+[data-testid="stPopover"] button { border-radius: 999px !important; min-width: 1.8rem !important; width: 1.8rem !important; height: 1.8rem !important; padding: 0 !important; color: var(--accent-dark) !important; border-color: #edc7af !important; background: #fff !important; font-weight: 800 !important; }
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  background: rgba(255,255,255,.48);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+[data-testid="stSidebar"] button[aria-label="Help"] { color: var(--accent-dark) !important; }
+[data-testid="stSidebar"] [data-baseweb="slider"] [role="slider"] {
+  background: var(--accent) !important;
+  border-color: #fff !important;
+  box-shadow: 0 0 0 1px var(--accent-dark) !important;
+}
+[data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div { background: var(--accent) !important; }
+.sidebar-brand {
+  background: linear-gradient(135deg, #ffffff, #fff0e4);
+  border: 1px solid var(--line); border-radius: 16px;
+  padding: 14px 14px 12px; margin: 0 0 12px;
+  box-shadow: 0 4px 14px rgba(101,67,42,.08);
+}
+.sidebar-brand .name { font-weight: 850; font-size: 1.08rem; color: #2f3a44; }
+.sidebar-brand .sub { color: var(--muted); font-size: .76rem; margin-top: 3px; }
+.version-pill {
+  display: inline-block; background: var(--primary); color: #fff !important;
+  border-radius: 999px; padding: 2px 9px; margin-left: 6px;
+  font-size: .72rem; font-weight: 800; vertical-align: 1px;
+}
+.sidebar-section-title {
+  font-size: .82rem; font-weight: 850; color: #8a5638;
+  letter-spacing: .04em; margin: 12px 0 5px;
+}
+.sidebar-status {
+  background: #ffffff; border: 1px solid var(--line); border-radius: 10px;
+  padding: 7px 9px; color: var(--muted); font-size: .78rem; margin: 4px 0 8px;
+}
+.app-hero {
+  background: linear-gradient(135deg, #ffffff 0%, #fff0e5 100%);
+  border: 1px solid var(--line); border-radius: 18px;
+  padding: 18px 22px; margin: 0 0 14px;
+  box-shadow: 0 6px 18px rgba(84,54,34,.08);
+}
+.app-hero .eyebrow { color: var(--accent-dark); font-size: .76rem; font-weight: 850; letter-spacing: .08em; }
+.app-hero .title { color: #2f3a44; font-size: 1.65rem; font-weight: 900; margin: 2px 0 3px; }
+.app-hero .desc { color: var(--muted); font-size: .9rem; }
+.action-note { color: var(--muted); font-size: .82rem; padding-top: .45rem; }
+.metric-card, .summary-card, .cloud-card, .mobile-quick-card {
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgba(84,54,34,.07);
+}
+.metric-card { border-radius: 12px; padding: 10px 6px; text-align:center; }
+.metric-card .lbl { font-size:.76rem; color:var(--muted); margin-bottom:2px; }
+.metric-card .val { font-size:1.16rem; font-weight:800; color:var(--ink); }
+.metric-card .pos { color:var(--danger); }
+.metric-card .neg { color:var(--success); }
+.summary-card { border-radius:14px; padding:14px 18px; margin: 0 0 14px; }
+.summary-card .title { font-size:1.03rem; font-weight:850; color:var(--ink); margin-bottom:8px; }
 .summary-card .grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:8px 14px; }
-.summary-card .item { color:#25384a; font-size:.93rem; }
-.summary-card .label { color:#687b8c; font-size:.78rem; display:block; }
-.combo-chip { display:inline-block; background:#e8f0f7; border:1px solid #a9c2d8;
-  border-radius:16px; padding:2px 10px; margin:2px 4px 2px 0; font-size:.85rem; color:#1c2b3a; }
-.strategy-banner { background:#1c2b3a; color:#e8f0f7; border-radius:12px;
-  padding:10px 16px; margin-bottom:12px; font-size:.95rem; }
-h1, h2, h3 { color:#1c2b3a; }
-/* 大按鈕 */
-div[data-testid="stButton"] > button[kind="primary"] {
-  font-size:1.15rem; font-weight:800; padding:0.7rem 1rem; border-radius:14px; }
-.cloud-card { background:#edf5fb; border:1px solid #adc4d8; border-radius:14px;
-  padding:14px 16px; margin:10px 0 14px 0; color:#1c2b3a; }
-.mobile-quick-card { background:#f7fbff; border:1px solid #a9c2d8; border-radius:16px;
-  padding:14px 16px; margin-bottom:14px; box-shadow:0 1px 4px rgba(25,45,65,.12); }
+.summary-card .item { color:#44515c; font-size:.9rem; }
+.summary-card .label { color:var(--muted); font-size:.76rem; display:block; }
+.combo-chip { display:inline-block; background:#fff0e5; border:1px solid #efcdb6;
+  border-radius:16px; padding:2px 10px; margin:2px 4px 2px 0; font-size:.83rem; color:#5a4335; }
+.mobile-quick-card { border-radius:14px; padding:12px 14px; margin-bottom:12px; }
+div[data-testid="stButton"] > button[kind="primary"],
+div[data-testid="stDownloadButton"] > button[kind="primary"] {
+  background: var(--primary); border-color: var(--primary); color: white;
+  font-weight: 800; border-radius: 12px;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover,
+div[data-testid="stDownloadButton"] > button[kind="primary"]:hover {
+  background: var(--primary-dark); border-color: var(--primary-dark); color: white;
+}
+div[data-testid="stButton"] > button { border-radius: 11px; }
 @media (max-width: 768px) {
-  .block-container { padding: 0.75rem 0.55rem 1.5rem 0.55rem; max-width: 100%; }
-  .strategy-banner { font-size:.85rem; padding:8px 10px; border-radius:10px; }
-  .summary-card { padding:10px 10px; }
+  .block-container { padding: .65rem .5rem 1.25rem; max-width: 100%; }
+  .app-hero { padding: 13px 14px; border-radius: 14px; }
+  .app-hero .title { font-size: 1.3rem; }
+  .app-hero .desc { font-size: .82rem; }
+  .summary-card { padding:10px; }
   .summary-card .grid { grid-template-columns: 1fr; gap:6px; }
-  .metric-card .val { font-size:1.02rem; }
-  .cloud-card, .mobile-quick-card { padding:10px 10px; }
-  h1 { font-size:1.35rem !important; }
-  h2 { font-size:1.20rem !important; }
-  h3 { font-size:1.05rem !important; }
-  div[data-testid="stButton"] > button { min-height: 2.8rem; }
+  .metric-card .val { font-size:1rem; }
+  h1 { font-size:1.32rem !important; }
+  h2 { font-size:1.16rem !important; }
+  h3 { font-size:1.02rem !important; }
+  div[data-testid="stButton"] > button { min-height: 2.7rem; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -971,7 +1063,7 @@ def cached_continuous(folder: str, symbol: str, session: str, method: str,
 def reset_defaults():
     st.session_state["strat"] = copy.deepcopy(DEFAULT_STRAT)
     for k in list(st.session_state.keys()):
-        if k.startswith(("w_", "s_")) and k != "w_ui_mode":
+        if k.startswith(("w_", "s_")):
             del st.session_state[k]
     st.session_state.pop("last_symbol", None)
     st.session_state.pop("loaded_file", None)
@@ -1072,11 +1164,22 @@ def _collect_dialog() -> dict:
     return strat
 
 
+def _compact_help(text: str):
+    with st.popover("?", help="查看說明"):
+        st.markdown(text)
+
+
+def _compact_header(title: str, help_text: str):
+    hc1, hc2 = st.columns([12, 1])
+    hc1.markdown(f"**{title}**")
+    with hc2:
+        _compact_help(help_text)
+
+
 # ============ 面板編輯器：類型 → 型態 二層勾選 ============
 def _slot_editor(prefix: str, title: str, hint: str, with_n: bool = False):
     """一個條件槽：先勾「類型」，再展開該類型的「型態」勾選格。"""
-    st.markdown(f"**{title}**")
-    st.caption(hint)
+    _compact_header(title, hint)
     ss = st.session_state
     cat_cols = st.columns(len(CATEGORY_ORDER))
     for i, cat in enumerate(CATEGORY_ORDER):
@@ -1111,90 +1214,89 @@ def _combo_editor(prefix: str, title: str, expanded: bool = False):
                      "任一勾選的型態當根成立，就不觸發這個組合。")
 
 
-@st.dialog("🎮 策略設定面板", width="large")
+@st.dialog("策略設定", width="large")
 def strategy_dialog():
     # 哨兵鍵：面板關閉後 Streamlit 會回收未渲染的 widget 狀態，
     # 重新開啟時哨兵不存在 -> 從已套用的策略設定重新灌入暫存值。
     if "s_direction_label" not in st.session_state:
         _seed_dialog()
 
-    st.caption("流程：1️⃣ 勾選進場條件 → 2️⃣ 勾選出場條件 → 3️⃣ 按「開始回測」。"
-               "面板內調整不會重新計算，按下開始回測才會執行。")
+    st.caption("設定進場、出場與參數；套用後回到主畫面執行回測。")
     tab_l, tab_s, tab_x, tab_p = st.tabs(
-        ["1️⃣ 多單進場", "1️⃣ 空單進場", "2️⃣ 出場條件", "🔧 參數細調"])
+        ["多單進場", "空單進場", "出場條件", "進階參數"])
 
     with tab_l:
         st.radio("交易方向", list(DIR_LABELS.keys()),
                  key="s_direction_label", horizontal=True)
-        st.info("同一組合內：滿足條件全部成立（AND）且前提成立且未被排除，才進場；"
-                "設定多個組合時，任一組合成立就進場（OR）。")
-        _combo_editor("s_L0", "🅰 多單進場組合 A", expanded=True)
-        _combo_editor("s_L1", "🅱 多單進場組合 B（不需要可留空）")
+        _compact_header("多單進場組合", "同一組合內採 AND；多個組合之間採 OR。前提、條件與排除皆可留空。")
+        _combo_editor("s_L0", "組合 A", expanded=True)
+        _combo_editor("s_L1", "組合 B（可留空）")
 
     with tab_s:
-        st.info("空單條件與多單獨立設定；只做多時可留空。所有型態多空通用。")
-        _combo_editor("s_S0", "🅰 空單進場組合 A", expanded=True)
-        _combo_editor("s_S1", "🅱 空單進場組合 B（不需要可留空）")
+        _compact_header("空單進場組合", "空單與多單獨立設定；只做多時可全部留空。")
+        _combo_editor("s_S0", "組合 A", expanded=True)
+        _combo_editor("s_S1", "組合 B（可留空）")
 
     with tab_x:
-        st.info("勾選要啟用的出場方式（可複選）。觸價類依序檢查：停損 → 停利 → 移動停損。")
+        _compact_header("出場方式", "可複選。觸價類依序檢查：固定停損、固定停利、移動停損；收盤類再檢查吊燈、MACD 與條件出場。")
         xc = st.columns(2)
         with xc[0]:
-            st.checkbox("**固定停損**", key="s_p_use_fixed_stop")
-            st.caption("虧損達設定點數就出場")
-            st.number_input("停損點數", 1.0, 5000.0, step=10.0, key="s_p_stop_points")
-            st.checkbox("**固定停利**", key="s_p_use_take_profit")
-            st.caption("獲利達設定點數就出場")
-            st.number_input("停利點數", 1.0, 10000.0, step=10.0, key="s_p_take_profit_points")
-            st.checkbox("**移動停損**", key="s_p_use_trailing_stop")
-            st.caption("從進場後最高（低）點回落設定點數出場")
-            st.number_input("移動停損點數", 1.0, 5000.0, step=10.0, key="s_p_trailing_points")
+            use_stop = st.checkbox("固定停損", key="s_p_use_fixed_stop", help="虧損達設定點數就出場")
+            if use_stop:
+                st.number_input("停損點數", 1.0, 5000.0, step=10.0, key="s_p_stop_points")
+            use_tp = st.checkbox("固定停利", key="s_p_use_take_profit", help="獲利達設定點數就出場")
+            if use_tp:
+                st.number_input("停利點數", 1.0, 10000.0, step=10.0, key="s_p_take_profit_points")
+            use_trailing = st.checkbox("移動停損", key="s_p_use_trailing_stop", help="從進場後最高或最低點回落設定點數出場")
+            if use_trailing:
+                st.number_input("移動停損點數", 1.0, 5000.0, step=10.0, key="s_p_trailing_points")
         with xc[1]:
-            st.checkbox("**吊燈出場**", key="s_p_use_chandelier")
-            st.caption("跌破 N 日極值 ± ATR×倍數的追蹤線出場（收盤確認）")
-            st.number_input("吊燈週期", 2, 200, key="s_p_chandelier_period")
-            st.number_input("吊燈 ATR 倍數", 0.5, 10.0, step=0.1, key="s_p_chandelier_mult")
-            st.checkbox("**MACD 反向出場**", key="s_p_use_macd_reverse")
-            st.caption("MACD 柱狀圖轉向就出場（多單轉負／空單轉正，收盤確認）")
-        st.markdown("---")
-        st.markdown("##### 條件出場（可選）：符合條件組合就平倉（收盤確認）")
-        st.caption("和進場一樣有三種條件槽（滿足／曾經滿足／排除），全部留空＝不使用。")
-        _combo_editor("s_XL", "🔻 多單條件出場組合")
-        _combo_editor("s_XS", "🔺 空單條件出場組合")
+            use_chandelier = st.checkbox("吊燈出場", key="s_p_use_chandelier", help="跌破 N 日極值 ± ATR×倍數的追蹤線後，以收盤確認出場")
+            if use_chandelier:
+                st.number_input("吊燈週期", 2, 200, key="s_p_chandelier_period")
+                st.number_input("吊燈 ATR 倍數", 0.5, 10.0, step=0.1, key="s_p_chandelier_mult")
+            st.checkbox("MACD 反向出場", key="s_p_use_macd_reverse", help="MACD 柱狀圖反向時，以收盤確認出場")
+        st.divider()
+        _compact_header("條件出場", "符合條件組合即平倉；全部留空代表不使用。")
+        _combo_editor("s_XL", "多單條件出場")
+        _combo_editor("s_XS", "空單條件出場")
 
     with tab_p:
-        st.caption("以下是各條件用到的參數，不改也能直接回測。")
-        pc = st.columns(3)
-        with pc[0]:
-            st.markdown("**MACD**")
-            st.number_input("快線週期", 2, 100, key="s_p_macd_fast")
-            st.number_input("慢線週期", 3, 300, key="s_p_macd_slow")
-            st.number_input("訊號線週期", 2, 100, key="s_p_macd_signal")
-            st.markdown("**布林通道**")
-            st.number_input("布林週期", 2, 300, key="s_p_bb_period")
-            st.number_input("標準差倍數", 0.5, 5.0, step=0.1, key="s_p_bb_std")
-        with pc[1]:
-            st.markdown("**均線類**")
-            st.selectbox("趨勢均線型態", ["SMA", "EMA", "WMA"], key="s_p_ma_filter_type")
-            st.number_input("趨勢均線週期", 2, 500, key="s_p_ma_filter_period")
-            st.number_input("交叉：短均週期", 2, 200, key="s_t_ma_fast")
-            st.number_input("交叉：長均週期", 3, 500, key="s_t_ma_slow")
-            st.text_input("排列均線（逗號分隔）", key="s_t_align_periods")
-        with pc[2]:
-            st.markdown("**KD／RSI／量能**")
-            st.number_input("KD 週期", 2, 100, key="s_p_kd_period")
-            st.number_input("KD 低檔門檻", 1.0, 50.0, step=1.0, key="s_t_kd_low")
-            st.number_input("KD 高檔門檻", 50.0, 99.0, step=1.0, key="s_t_kd_high")
-            st.number_input("RSI 週期", 2, 100, key="s_p_rsi_period")
-            st.number_input("RSI 門檻", 1.0, 99.0, step=1.0, key="s_t_rsi_value")
-            st.number_input("量能倍數（vs 量均）", 0.5, 10.0, step=0.1, key="s_t_vol_mult")
-            st.number_input("爆量倍數（vs 昨日量）", 0.5, 10.0, step=0.1,
-                            key="s_t_vol_prev_mult")
-            st.number_input("量均週期", 2, 200, key="s_p_vol_ma_period")
+        st.caption("只有需要微調指標時才展開；維持預設值即可直接回測。")
+        with st.expander("MACD 與布林通道", expanded=False):
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.number_input("MACD 快線週期", 2, 100, key="s_p_macd_fast")
+                st.number_input("MACD 慢線週期", 3, 300, key="s_p_macd_slow")
+                st.number_input("MACD 訊號線週期", 2, 100, key="s_p_macd_signal")
+            with pc2:
+                st.number_input("布林週期", 2, 300, key="s_p_bb_period")
+                st.number_input("布林標準差倍數", 0.5, 5.0, step=0.1, key="s_p_bb_std")
+        with st.expander("均線", expanded=False):
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.selectbox("趨勢均線型態", ["SMA", "EMA", "WMA"], key="s_p_ma_filter_type")
+                st.number_input("趨勢均線週期", 2, 500, key="s_p_ma_filter_period")
+            with pc2:
+                st.number_input("交叉短均週期", 2, 200, key="s_t_ma_fast")
+                st.number_input("交叉長均週期", 3, 500, key="s_t_ma_slow")
+                st.text_input("排列均線（逗號分隔）", key="s_t_align_periods")
+        with st.expander("KD、RSI 與量能", expanded=False):
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.number_input("KD 週期", 2, 100, key="s_p_kd_period")
+                st.number_input("KD 低檔門檻", 1.0, 50.0, step=1.0, key="s_t_kd_low")
+                st.number_input("KD 高檔門檻", 50.0, 99.0, step=1.0, key="s_t_kd_high")
+                st.number_input("RSI 週期", 2, 100, key="s_p_rsi_period")
+                st.number_input("RSI 門檻", 1.0, 99.0, step=1.0, key="s_t_rsi_value")
+            with pc2:
+                st.number_input("量能倍數（相對量均）", 0.5, 10.0, step=0.1, key="s_t_vol_mult")
+                st.number_input("爆量倍數（相對昨日量）", 0.5, 10.0, step=0.1, key="s_t_vol_prev_mult")
+                st.number_input("量均週期", 2, 200, key="s_p_vol_ma_period")
 
     st.markdown("---")
     b1, b2 = st.columns([2.5, 1])
-    run = b1.button("▶ 開始回測", type="primary", use_container_width=True,
+    run = b1.button("開始回測", type="primary", use_container_width=True,
                     key="dlg_run_flag")
     cancel = b2.button("取消", use_container_width=True, key="dlg_cancel_flag")
 
@@ -1231,84 +1333,208 @@ def handle_pending_dialog_submit():
 # 提交後援處理（fragment 與整頁重跑皆涵蓋）
 handle_pending_dialog_submit()
 
-# ================= 側欄（低頻／輔助設定） =================
+# ================= 左側控制欄（v0.6.4 精簡重整） =================
+selected_cloud_file = None
+cloud_mode = "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情"
+manual_ready = False
+
+BATCH_MODE_MAP = {
+    "前後期行情對照": "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情",
+    "前期行情（2015～2023）": "前期行情回測：2015～2023",
+    "後期牛市（2024～資料末日）": "後期牛市回測：2024～資料末日",
+    "目前畫面期間": "目前畫面期間回測：使用上方起迄日",
+}
+
 with st.sidebar:
-    st.markdown("## 台指期回測工具")
-
-    # 1. 策略設定面板
-    if st.button("🎮 策略設定面板", type="primary", use_container_width=True,
-                 help="設定進場條件、出場條件與參數，按「開始回測」才會執行"):
-        strategy_dialog()
-
-    # 2. 操作模式
-    st.markdown("### 操作模式")
-    work_mode = st.radio(
-        "作業環境",
-        ["雲端作業模式", "本機桌機模式"],
-        index=0,
-        key="w_work_mode",
-        horizontal=True,
-        help="雲端作業模式：不依賴本機 Google Drive 路徑；若已設定 Google Drive API，回測完成會自動上傳結果。",
+    st.markdown(
+        f'''<div class="sidebar-brand">
+        <div class="name">MTX 台指期回測 <span class="version-pill">{APP_VERSION}</span></div>
+        <div class="sub">{APP_RELEASE_NAME}｜可用版本標示確認部署是否更新</div>
+        </div>''',
+        unsafe_allow_html=True,
     )
-    cloud_operation_mode = (work_mode == "雲端作業模式")
-    layout_mode = st.radio(
-        "畫面配置",
-        ["桌機完整介面", "手機精簡介面"],
+
+    st.markdown('<div class="sidebar-section-title">使用方式</div>', unsafe_allow_html=True)
+    usage_profile = st.selectbox(
+        "操作環境",
+        ["雲端・桌機", "雲端・手機", "本機・桌機"],
         index=0,
-        key="w_layout_mode",
-        horizontal=True,
-        help="手機精簡介面會在主畫面提供大按鈕與簡化操作；桌機版保留原本介面。",
+        key="w_usage_profile",
+        help="雲端模式可讀取策略投放箱並上傳結果；手機模式會調整操作順序與按鈕尺寸。",
     )
-    mobile_mode = (layout_mode == "手機精簡介面")
-    ui_mode = st.radio("介面細節度", ["概略模式", "細節模式"], key="w_ui_mode",
-                       horizontal=True,
-                       help="概略模式：成本與資金用預設值。細節模式：可逐項調整。")
-    simple_mode = (ui_mode == "概略模式")
-    st.button("恢復預設值", on_click=reset_defaults, use_container_width=True)
+    cloud_operation_mode = usage_profile.startswith("雲端")
+    mobile_mode = "手機" in usage_profile
 
-    # 3. 圖表顯示設定
-    st.markdown("### 圖表顯示設定")
-    with st.expander("勾選要顯示的圖層", expanded=False):
-        st.caption("只控制畫面，不會改變回測結果，也不會重新回測。")
-        st.checkbox("K 線", key="w_show_candlestick")
-        st.checkbox("進場／出場標記", key="w_show_trade_markers")
-        st.checkbox("布林通道", key="w_show_bollinger")
-        st.checkbox("吊燈線", key="w_show_chandelier_lines")
-        st.checkbox("均線", key="w_show_ma")
-        st.checkbox("成交量", key="w_show_volume")
-        st.checkbox("MACD 副圖", key="w_show_macd_panel")
-        st.checkbox("KD 副圖", key="w_show_kd_panel")
-        st.checkbox("資金曲線", key="w_show_equity_curve")
-        st.text_input("圖表均線週期（逗號分隔）", key="w_ma_periods_text")
+    if cloud_operation_mode:
+        st.markdown('<div class="sidebar-section-title">雲端批次策略</div>', unsafe_allow_html=True)
+        cloud_files = []
+        cloud_list_error = ""
+        try:
+            cloud_files = list_cloud_strategy_files()
+        except Exception as e:  # noqa: BLE001
+            cloud_list_error = str(e)
 
-    # 4. 交易成本與資金設定
-    st.markdown("### 交易成本與資金設定")
-    cost_box = st.empty()
+        if cloud_list_error:
+            st.warning("策略投放箱暫時無法連線。")
+        elif cloud_files:
+            labels = [item.get("name", "未命名.json") for item in cloud_files]
+            cloud_pick = st.selectbox(
+                "策略檔",
+                options=list(range(len(cloud_files))),
+                format_func=lambda i: labels[i],
+                key="batch_cloud_drive_pick",
+                help="直接讀取 Google Drive `_策略投放箱`；最新修改的 JSON 排在前面。",
+            )
+            selected_cloud_file = cloud_files[cloud_pick]
+            st.markdown(
+                f'<div class="sidebar-status">已連線・{len(cloud_files)} 個策略檔</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("策略投放箱目前沒有 JSON。")
 
-    # 5. 資料設定
-    st.markdown("### 資料設定")
-    folder = st.text_input("CSV 資料夾路徑", value=DEFAULT_DATA_FOLDER,
-                           help="雲端預設會自動指向 txf_backtester/data；本機則通常是 data。")
-    symbol = st.selectbox("商品", list(SYMBOLS.keys()),
-                          index=list(SYMBOLS.keys()).index(DEFAULT_SYMBOL),
-                          format_func=lambda s: f"{s} {SYMBOLS[s]['name']}")
-    date_box = st.container()
-    if not simple_mode:
-        session_label = st.selectbox("交易時段", list(SESSION_LABELS.keys()), index=0)
-        method_label = st.selectbox("連續契約規則", list(METHOD_LABELS.keys()), index=0)
-        n_confirm = st.number_input("換倉確認天數", 1, 10, value=3)
-        exclude_weekly = st.checkbox("排除週契約（到期月份含 W）", value=True)
+        cloud_mode_label = st.selectbox(
+            "回測範圍",
+            list(BATCH_MODE_MAP.keys()),
+            index=0,
+            key="batch_cloud_mode_label",
+            help="前後期行情對照會自動跑兩個期間並產生比較表；其餘模式只跑單一期間。",
+        )
+        cloud_mode = BATCH_MODE_MAP[cloud_mode_label]
+        refresh_col, run_col = st.columns([1, 2])
+        if refresh_col.button("重新整理", use_container_width=True, help="重新讀取策略投放箱"):
+            list_cloud_strategy_files.clear()
+            st.rerun()
+        if run_col.button(
+            "開始批次回測",
+            use_container_width=True,
+            type="primary",
+            disabled=not bool(selected_cloud_file),
+            help="執行目前選取的策略 JSON。",
+        ):
+            try:
+                raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
+                loaded_from = "gdrive:" + selected_cloud_file["id"] + ":" + selected_cloud_file.get("modifiedTime", "")
+                set_batch_json_and_queue(raw, loaded_from, cloud_mode, selected_cloud_file.get("name", ""))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"批次策略讀取失敗：{e}")
     else:
-        session_label, method_label = "一般盤", "穩定換倉（預設）"
-        n_confirm, exclude_weekly = 3, True
-        st.caption("使用預設：一般盤｜穩定換倉｜換倉確認 3 天｜排除週契約")
+        st.markdown('<div class="sidebar-section-title">本機批次策略</div>', unsafe_allow_html=True)
+        ok, msg = ensure_strategy_dropbox()
+        local_files = list_strategy_dropbox_files() if ok else []
+        if not ok:
+            st.warning(f"本機投放箱無法使用：{msg}")
+        elif local_files:
+            labels = [f["name"] for f in local_files]
+            local_pick = st.selectbox(
+                "策略檔",
+                options=list(range(len(local_files))),
+                format_func=lambda i: labels[i],
+                key="batch_dropbox_pick_main",
+                help="讀取本機策略投放箱內的 JSON。",
+            )
+        else:
+            local_pick = None
+            st.info("本機投放箱目前沒有 JSON。")
+        local_mode_label = st.selectbox(
+            "回測範圍",
+            list(BATCH_MODE_MAP.keys()),
+            index=0,
+            key="batch_local_mode_label",
+        )
+        cloud_mode = BATCH_MODE_MAP[local_mode_label]
+        if st.button(
+            "開始批次回測",
+            use_container_width=True,
+            type="primary",
+            disabled=local_pick is None,
+        ):
+            try:
+                picked = local_files[local_pick]
+                raw = load_batch_json_from_dropbox(picked["path"])
+                set_batch_json_and_queue(
+                    raw,
+                    picked["path"] + str(picked["mtime"]),
+                    cloud_mode,
+                    picked["name"],
+                )
+            except Exception as e:  # noqa: BLE001
+                st.error(f"本機策略讀取失敗：{e}")
+
+    st.markdown('<div class="sidebar-section-title">單次回測資料</div>', unsafe_allow_html=True)
+    symbol = st.selectbox(
+        "商品",
+        list(SYMBOLS.keys()),
+        index=list(SYMBOLS.keys()).index(DEFAULT_SYMBOL),
+        format_func=lambda s: f"{s} {SYMBOLS[s]['name']}",
+        help="目前研究以 MTX 小型台指為主。",
+    )
+    date_box = st.container()
+
+    with st.expander("顯示與成本", expanded=False):
+        custom_costs = st.checkbox(
+            "自訂成本與資金",
+            value=False,
+            key="w_custom_costs",
+            help="未勾選時使用商品預設值；勾選後才顯示手續費、滑價、期交稅與初始資金。",
+        )
+        simple_mode = not custom_costs
+        cost_box = st.empty()
+        st.markdown("**圖表圖層**")
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            st.checkbox("K 線", key="w_show_candlestick")
+            st.checkbox("交易標記", key="w_show_trade_markers")
+            st.checkbox("布林通道", key="w_show_bollinger")
+            st.checkbox("吊燈線", key="w_show_chandelier_lines")
+            st.checkbox("均線", key="w_show_ma")
+        with gc2:
+            st.checkbox("成交量", key="w_show_volume")
+            st.checkbox("MACD", key="w_show_macd_panel")
+            st.checkbox("KD", key="w_show_kd_panel")
+            st.checkbox("資金曲線", key="w_show_equity_curve")
+        st.text_input(
+            "圖表均線週期",
+            key="w_ma_periods_text",
+            help="以逗號分隔，例如 5,10,20,60,120,240。只影響圖表，不改變回測結果。",
+        )
+
+    with st.expander("資料與換倉進階", expanded=False):
+        folder = st.text_input(
+            "CSV 資料夾路徑",
+            value=DEFAULT_DATA_FOLDER,
+            help="雲端通常自動指向 txf_backtester/data；只有資料位置改變時才需要調整。",
+        )
+        session_label = st.selectbox(
+            "交易時段", list(SESSION_LABELS.keys()), index=0,
+            help="日 K 研究通常使用一般盤。",
+        )
+        method_label = st.selectbox(
+            "連續契約規則", list(METHOD_LABELS.keys()), index=0,
+            help="穩定換倉會避免主力契約短暫切換造成跳動。",
+        )
+        n_confirm = st.number_input(
+            "換倉確認天數", 1, 10, value=3,
+            help="主力契約連續符合條件幾天後才正式換倉。",
+        )
+        exclude_weekly = st.checkbox(
+            "排除週契約", value=True,
+            help="排除到期月份含 W 的週契約。",
+        )
+
+    if "folder" not in locals():
+        folder = DEFAULT_DATA_FOLDER
+    if "session_label" not in locals():
+        session_label = "一般盤"
+        method_label = "穩定換倉（預設）"
+        n_confirm = 3
+        exclude_weekly = True
 
     if symbol == "MTX" and has_prepared_mtx(folder):
         session_label, method_label = "一般盤", "穩定換倉（預設）"
         n_confirm, exclude_weekly = 3, True
-        st.success(f"已偵測到 MTX prepared 回測資料，本版將直接讀取：{prepared_mtx_path(folder)}")
+        st.markdown('<div class="sidebar-status">MTX 準備資料已就緒</div>', unsafe_allow_html=True)
 
-    # 4.（補填）成本與資金預設值；實際顯示在資料日期確定後補入 cost_box。
     spec = SYMBOLS[symbol]
     if st.session_state.get("last_symbol") != symbol:
         st.session_state["w_point_value"] = float(spec["point_value"])
@@ -1320,163 +1546,72 @@ with st.sidebar:
     st.session_state.setdefault("w_fee", float(spec["fee"]))
     st.session_state.setdefault("w_slippage", float(spec["slippage_points"]))
     st.session_state.setdefault("w_initial_capital", float(spec["margin_reference"]))
-    st.session_state.setdefault("w_use_tax", True)  # v0.4.6：期交稅預設計入
+    st.session_state.setdefault("w_use_tax", True)
 
-    # 6. 參數檔／進階設定
-    st.markdown("### 參數檔／進階設定")
-    up = st.file_uploader("載入策略參數 JSON", type=["json"])
-    if up is not None and st.session_state.get("loaded_file") != up.name + str(up.size):
-        try:
-            apply_loaded_params(load_params_json(up))
-            st.session_state["loaded_file"] = up.name + str(up.size)
-            st.rerun()
-        except Exception as e:  # noqa: BLE001
-            st.error(f"參數檔讀取失敗: {e}")
-
-    st.markdown("#### 批次策略回測")
-    with st.expander("雲端策略投放箱（預設）", expanded=True):
-        st.caption("直接讀取 Google Drive 的 `_策略投放箱`；最新 batch JSON 會排在第一個。")
-        cloud_files = []
-        cloud_list_error = ""
-        selected_cloud_file = None
-        try:
-            cloud_files = list_cloud_strategy_files()
-        except Exception as e:  # noqa: BLE001
-            cloud_list_error = str(e)
-
-        if cloud_list_error:
-            st.warning(f"暫時無法讀取雲端策略投放箱：{cloud_list_error}")
-        elif cloud_files:
-            labels = [
-                f"{item.get('name', '未命名.json')}｜{item.get('modifiedTime', '')}"
-                for item in cloud_files
-            ]
-            cloud_pick = st.selectbox(
-                "目前選擇的雲端批次策略",
-                options=list(range(len(cloud_files))),
-                format_func=lambda i: labels[i],
-                key="batch_cloud_drive_pick",
-            )
-            selected_cloud_file = cloud_files[cloud_pick]
-            st.success(f"已連線策略投放箱，共找到 {len(cloud_files)} 個 JSON。")
-            st.caption(f"目前檔案：`{selected_cloud_file.get('name', '')}`")
-        else:
-            selected_cloud_file = None
-            st.info("雲端策略投放箱目前沒有 JSON 檔。")
-
-        cloud_mode = st.radio(
-            "雲端策略批次回測模式",
-            [
-                "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情",
-                "前期行情回測：2015～2023",
-                "後期牛市回測：2024～資料末日",
-                "目前畫面期間回測：使用上方起迄日",
-            ],
-            index=0,
-            key="batch_cloud_mode",
-            help="前後期行情對照會自動跑兩段並產生對照表；其餘模式只跑單一期間。",
+    with st.expander("其他策略來源", expanded=False):
+        st.markdown("**單次策略參數檔**")
+        up = st.file_uploader(
+            "載入單次策略 JSON",
+            type=["json"],
+            help="只用於單次回測；載入後仍需按主畫面的開始回測。",
         )
-        refresh_col, run_col = st.columns(2)
-        if refresh_col.button("🔄 重新整理策略", use_container_width=True):
-            list_cloud_strategy_files.clear()
-            st.rerun()
-        if run_col.button(
-            "▶ 開始雲端批次回測",
-            use_container_width=True,
-            type="primary",
-            disabled=not bool(selected_cloud_file),
-        ):
+        if up is not None and st.session_state.get("loaded_file") != up.name + str(up.size):
             try:
-                raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
-                loaded_from = "gdrive:" + selected_cloud_file["id"] + ":" + selected_cloud_file.get("modifiedTime", "")
-                set_batch_json_and_queue(raw, loaded_from, cloud_mode, selected_cloud_file.get("name", ""))
+                apply_loaded_params(load_params_json(up))
+                st.session_state["loaded_file"] = up.name + str(up.size)
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"參數檔讀取失敗：{e}")
+
+        st.markdown("**手動上傳批次 JSON**")
+        batch_up = st.file_uploader(
+            "上傳批次策略 JSON",
+            type=["json"],
+            key="batch_strategy_json_uploader",
+            help="無法使用雲端投放箱時，才需要手動上傳。最多 20 組策略。",
+        )
+        if batch_up is not None:
+            batch_key = batch_up.name + str(batch_up.size)
+            if st.session_state.get("batch_loaded_file") != batch_key:
+                raw = batch_up.read()
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                st.session_state["batch_strategy_json_text"] = raw
+                st.session_state["batch_loaded_file"] = batch_key
+                st.session_state["batch_loaded_display_name"] = batch_up.name
+                st.session_state.pop("batch_bt", None)
+            manual_ready = True
+            manual_mode_label = st.selectbox(
+                "手動檔回測範圍",
+                list(BATCH_MODE_MAP.keys()),
+                index=0,
+                key="batch_manual_mode_label",
+            )
+            if st.button("執行手動批次回測", use_container_width=True, type="primary"):
+                queue_batch_mode(BATCH_MODE_MAP[manual_mode_label])
+
+        st.markdown("**手動雲端連結**")
+        cloud_url = st.text_input(
+            "策略 JSON 連結",
+            value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
+            key="batch_cloud_url",
+            help="僅在投放箱無法使用時作為備援。連線失敗會改讀內建故障測試檔，且不列入正式研究。",
+        )
+        if st.button("從連結載入並執行", use_container_width=True):
+            try:
+                raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
+                set_batch_json_and_queue(raw, loaded_from, cloud_mode)
             except Exception as e:  # noqa: BLE001
                 st.error(f"批次策略讀取失敗：{e}")
 
-        with st.container():
-            st.markdown("##### 手動雲端連結（備用）")
-            cloud_url = st.text_input(
-                "雲端策略 JSON 連結",
-                value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
-                key="batch_cloud_url",
-            )
-            st.caption(f"連線異常測試備援檔：{BUNDLED_FALLBACK_FILENAME}（不列入正式策略研究）")
-            if st.button("使用手動連結載入", use_container_width=True):
-                try:
-                    raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
-                    set_batch_json_and_queue(raw, loaded_from, cloud_mode)
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"批次策略讀取失敗：{e}")
 
-    with st.expander("本機策略投放箱（備用）", expanded=False):
-        ok, msg = ensure_strategy_dropbox()
-        st.caption(f"投放箱路徑：`{STRATEGY_DROPBOX_DIR}`")
-        if not ok:
-            st.warning(f"無法建立或讀取策略投放箱：{msg}")
-        else:
-            files = list_strategy_dropbox_files()
-            if files:
-                st.success(f"策略投放箱已連線，找到 {len(files)} 個 JSON。")
-                labels = [f"{f['name']}｜{pd.to_datetime(f['mtime'], unit='s').strftime('%Y-%m-%d %H:%M:%S')}"
-                          for f in files]
-                pick = st.selectbox("目前選擇的批次策略 JSON",
-                                    options=list(range(len(files))),
-                                    format_func=lambda i: labels[i],
-                                    key="batch_dropbox_pick")
-                st.caption(f"目前檔案：`{files[pick]['name']}`")
-                dropbox_mode = st.radio(
-                    "本機投放箱批次回測模式",
-                    [
-                        "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情",
-                        "前期行情回測：2015～2023",
-                        "後期牛市回測：2024～資料末日",
-                        "目前畫面期間回測：使用上方起迄日",
-                    ],
-                    index=0,
-                    key="batch_dropbox_mode",
-                    help="前後期行情對照會自動跑兩段並產生對照表；其餘模式只跑單一期間。",
-                )
-                if st.button("▶ 開始本機投放箱批次回測", use_container_width=True, type="secondary"):
-                    try:
-                        raw = load_batch_json_from_dropbox(files[pick]["path"])
-                        set_batch_json_and_queue(raw, files[pick]["path"] + str(files[pick]["mtime"]), dropbox_mode, files[pick]["name"])
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"讀取投放箱策略 JSON 失敗：{e}")
-            else:
-                st.info("本機策略投放箱目前沒有 JSON 檔。新電腦建議直接使用上方『雲端策略連結』。")
 
-    st.markdown("#### 手動載入批次策略 JSON")
-    batch_up = st.file_uploader("手動載入批次策略 JSON（最多20組）", type=["json"],
-                                key="batch_strategy_json_uploader")
-    manual_ready = False
-    if batch_up is not None:
-        batch_key = batch_up.name + str(batch_up.size)
-        if st.session_state.get("batch_loaded_file") != batch_key:
-            raw = batch_up.read()
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
-            st.session_state["batch_strategy_json_text"] = raw
-            st.session_state["batch_loaded_file"] = batch_key
-            st.session_state["batch_loaded_display_name"] = batch_up.name
-            st.session_state.pop("batch_bt", None)
-        manual_ready = True
-        st.success(f"已載入手動 JSON：{batch_up.name}")
-        st.caption("批次 JSON 可放策略陣列，或 {\"strategies\": [...]}。最多執行 20 組。")
-    manual_mode = st.radio(
-        "手動 JSON 批次回測模式",
-        [
-            "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情",
-            "前期行情回測：2015～2023",
-            "後期牛市回測：2024～資料末日",
-            "目前畫面期間回測：使用上方起迄日",
-        ],
-        index=0,
-        key="batch_manual_mode",
-        disabled=not manual_ready,
+    st.button(
+        "恢復預設設定",
+        on_click=reset_defaults,
+        use_container_width=True,
+        help="重設介面、圖表、成本與單次策略設定。",
     )
-    if st.button("▶ 開始手動批次回測", use_container_width=True, type=("primary" if manual_ready else "secondary"), disabled=not manual_ready):
-        queue_batch_mode(manual_mode)
-    st.caption("選擇一種模式後按「開始批次回測」。前後期行情對照會自動比較 2015～2023 與 2024～資料末日。")
 
 if mobile_mode:
     st.markdown("""
@@ -1537,7 +1672,7 @@ with cost_box.container():
                 f"期交稅 {'計入' if st.session_state['w_use_tax'] else '不計'}｜"
                 f"初始資金 {st.session_state['w_initial_capital']:,.0f} 元。")
     else:
-        with st.expander("成本與資金（點開調整）", expanded=False):
+        with st.container(border=True):
             st.number_input("每點價值（元）", min_value=1.0, step=1.0, key="w_point_value")
             st.number_input("單邊手續費（元／口）", min_value=0.0, step=1.0, key="w_fee")
             st.number_input("單邊滑價（點）", min_value=0.0, step=0.5, key="w_slippage")
@@ -1613,7 +1748,7 @@ def execute_backtest():
         "d_start": d_start, "d_end": d_end, "n_bars": len(data),
         "cont": cont, "roll_log": roll_log,
         "strat": copy.deepcopy(strat), "hash": settings_hash(),
-        "ui_mode": ui_mode,
+        "ui_mode": usage_profile,
         "safety_info": copy.deepcopy(safety_info),
     }
 
@@ -2202,29 +2337,45 @@ def build_batch_zip_filename(batch: dict) -> str:
 
 
 # ================= 主畫面 =================
-st.markdown('<div class="strategy-banner">目前內建可選用策略：'
-            '<b>MACD＋布林線＋吊燈出場＋KD＋RSI</b>（單一內建策略，'
-            '進出場條件可在「策略設定面板」自由組合）</div>', unsafe_allow_html=True)
+st.markdown(
+    f'''<div class="app-hero">
+      <div class="eyebrow">MTX STRATEGY LAB <span class="version-pill">{APP_VERSION}</span></div>
+      <div class="title">台指期策略回測工作台</div>
+      <div class="desc">單次策略調整、批次研究與前後期行情對照集中在同一介面；設定變更後，只有按下執行才會重新計算。</div>
+    </div>''',
+    unsafe_allow_html=True,
+)
 
 bc1, bc2, bc3 = st.columns([1.2, 1.2, 2.6])
-if bc1.button("🎮 策略設定面板 ", type="primary", use_container_width=True):
+if bc1.button(
+    "調整單次策略",
+    type="primary",
+    use_container_width=True,
+    help="開啟進場、出場與條件參數面板。",
+):
     strategy_dialog()
-main_run = bc2.button("▶ 開始回測", type="primary", use_container_width=True,
-                      help="以目前的策略與資料設定執行回測")
+main_run = bc2.button(
+    "執行單次回測",
+    type="primary",
+    use_container_width=True,
+    help="以目前的策略、資料與成本設定執行。",
+)
 with bc3:
-    st.caption("先在「策略設定面板」勾選進出場條件，再按「開始回測」。"
-               "調整欄位不會自動重跑，結果只在按下開始回測後更新。")
+    st.markdown(
+        '<div class="action-note">批次策略由左側「雲端批次策略」執行；單次回測用來檢視目前面板中的策略。</div>',
+        unsafe_allow_html=True,
+    )
 
 if mobile_mode:
     st.markdown("""
     <div class="mobile-quick-card">
-      <b>📱 手機快速操作</b><br>
-      建議手機先使用「雲端策略／內建策略」跑前後期行情對照；若已設定 Google Drive API，結果會自動上傳。
+      <b>手機快速操作</b><br>
+      直接執行左側已選取的雲端策略，預設跑前後期行情對照。
     </div>
     """, unsafe_allow_html=True)
     mq1, mq2 = st.columns(2)
     if mq1.button(
-        "▶ 開始雲端批次回測",
+        "開始雲端批次回測",
         type="primary",
         use_container_width=True,
         key="mobile_cloud_validation_btn",
@@ -2252,15 +2403,15 @@ if mobile_mode:
     with mq2:
         st.markdown(
             f"""<div style="height:2.65rem;display:flex;align-items:center;justify-content:center;
-            padding:0 .65rem;border:1px solid #c6d1dc;border-radius:.5rem;background:#fff;
-            color:#243447;font-weight:600;text-align:center;overflow:hidden;white-space:nowrap;
+            padding:0 .65rem;border:1px solid #efcdb6;border-radius:12px;background:#fff;
+            color:#44515c;font-weight:600;text-align:center;overflow:hidden;white-space:nowrap;
             text-overflow:ellipsis;" title="{loaded_strategy_name}">
-            📄 {loaded_strategy_name}</div>""",
+            {loaded_strategy_name}</div>""",
             unsafe_allow_html=True,
         )
     with st.expander("手機上傳策略 JSON", expanded=False):
         mobile_up = st.file_uploader("上傳策略 JSON 後直接跑前後期行情對照", type=["json"], key="mobile_batch_json_uploader")
-        if mobile_up is not None and st.button("▶ 跑上傳策略", use_container_width=True, key="mobile_uploaded_run_btn"):
+        if mobile_up is not None and st.button("執行上傳策略", use_container_width=True, key="mobile_uploaded_run_btn"):
             try:
                 raw = mobile_up.read()
                 if isinstance(raw, bytes):
@@ -2278,8 +2429,9 @@ if st.session_state.pop("batch_run_request", False):
 if st.session_state.pop("batch_validation_request", False):
     execute_sample_validation()
 
-# 目前策略設定摘要
-st.markdown(zh_strategy_summary(st.session_state["strat"]), unsafe_allow_html=True)
+# 目前單次策略摘要（預設收合，避免主畫面資訊過量）
+with st.expander("目前單次策略摘要", expanded=False):
+    st.markdown(zh_strategy_summary(st.session_state["strat"]), unsafe_allow_html=True)
 
 sample_validation_bt = st.session_state.get("sample_validation_bt")
 if sample_validation_bt is not None:
@@ -2355,11 +2507,11 @@ if batch_bt is not None:
 
 bt = st.session_state.get("bt")
 if bt is None:
-    st.info("尚未執行單次回測。桌機可按「▶ 開始回測」；手機建議使用上方「雲端前後期對照」。")
+    st.info("尚未執行單次回測。桌機可按「執行單次回測」；手機建議使用上方的雲端批次操作。")
     st.stop()
 
 if bt["hash"] != settings_hash():
-    st.warning("⚠ 設定已變更，以下為【上次回測】的結果；按「▶ 開始回測」以套用新設定。")
+    st.warning("設定已變更，以下為【上次回測】的結果；按「執行單次回測」以套用新設定。")
 
 # ---- 回測摘要卡片 ----
 st.markdown(
