@@ -553,13 +553,13 @@ BATCH_MAX_STRATEGIES = 20
 STRATEGY_DROPBOX_DIR = os.path.join(DEFAULT_RECORD_DIR, "_策略投放箱")
 
 # v0.5.2：新電腦預設使用雲端策略連結，不再依賴 Google Drive 桌面版同步資料夾。
-# v0.5.3：Google Drive 若回傳 HTML 分享頁，會自動改用內建 batch_009，不中斷測試。
+# v0.5.3：Google Drive 若回傳 HTML 分享頁，會自動改用內建雲端失效測試檔，不中斷平台故障診斷。
 # v0.5.4：雲端作業模式預設不依賴本機 Google Drive；結果以下載 ZIP／複製總覽文字為主。
 # v0.5.5：雲端作業模式優先自動上傳回測結果到 Google Drive。
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CLOUD_BATCH_JSON_URL = "https://drive.google.com/file/d/1aLnJSRQJ1HW1_7GgR32VXzCtexmSsd_A/view?usp=drivesdk"
-BUNDLED_BATCH_009_FILENAME = "batch_009_獲利放大同步放大出場條件診斷.json"
-BUNDLED_BATCH_009_PATH = os.path.join(APP_DIR, "bundled_strategies", BUNDLED_BATCH_009_FILENAME)
+BUNDLED_FALLBACK_FILENAME = "雲端失效測試用檔案-測試平台故障或連線異常.json"
+BUNDLED_FALLBACK_PATH = os.path.join(APP_DIR, "bundled_strategies", BUNDLED_FALLBACK_FILENAME)
 
 # v0.5.5：Streamlit 雲端部署時，程式從 repo 根目錄啟動；app.py 位於 txf_backtester/。
 # 因此資料預設要優先指向 txf_backtester/data，才能讀到 txf_backtester/data/prepared/*.csv。
@@ -720,15 +720,15 @@ def load_batch_json_from_cloud_url(url: str) -> str:
     return text
 
 
-def load_bundled_batch_009_json() -> str:
-    """讀取 v0.5.3 內建 batch_009。
+def load_bundled_fallback_json() -> str:
+    """讀取內建雲端失效測試檔。
 
-    用途：新電腦沒有 Google Drive 桌面版，或 Google Drive 分享頁不提供直接 JSON 時，
-    仍可直接執行最新策略批次。
+    用途：僅在 Google Drive 分享頁無法提供有效 JSON 時，
+    驗證平台故障處理與連線異常備援流程；不代表正式研究批次。
     """
-    if not os.path.exists(BUNDLED_BATCH_009_PATH):
-        raise FileNotFoundError(BUNDLED_BATCH_009_PATH)
-    with open(BUNDLED_BATCH_009_PATH, "r", encoding="utf-8-sig") as f:
+    if not os.path.exists(BUNDLED_FALLBACK_PATH):
+        raise FileNotFoundError(BUNDLED_FALLBACK_PATH)
+    with open(BUNDLED_FALLBACK_PATH, "r", encoding="utf-8-sig") as f:
         text = f.read()
     json.loads(text)
     return text
@@ -753,7 +753,7 @@ def queue_batch_mode(mode_label: str) -> None:
 
 
 def load_cloud_or_bundled_batch_json(cloud_url: str, show_message: bool = True) -> tuple[str, str, str]:
-    """優先讀雲端 JSON；失敗時回退內建 batch_009。
+    """優先讀雲端 JSON；失敗時回退內建雲端失效測試檔。
 
     回傳：(json_text, loaded_from, warning_message)。warning_message 為空代表雲端成功。
     """
@@ -763,18 +763,18 @@ def load_cloud_or_bundled_batch_json(cloud_url: str, show_message: bool = True) 
             st.success("已成功讀取雲端策略 JSON。")
         return raw, "cloud:" + str(cloud_url), ""
     except Exception as cloud_error:  # noqa: BLE001
-        raw = load_bundled_batch_009_json()
-        msg = "雲端策略 JSON 讀取失敗，已自動改用內建 batch_009。" f" 原因：{cloud_error}"
+        raw = load_bundled_fallback_json()
+        msg = "雲端策略 JSON 讀取失敗，已改用『雲端失效測試用檔案』驗證平台是否能正常處理連線異常；此檔不列入正式策略研究。" f" 原因：{cloud_error}"
         if show_message:
             st.warning(msg)
-        return raw, "bundled:" + BUNDLED_BATCH_009_FILENAME, msg
+        return raw, "bundled:" + BUNDLED_FALLBACK_FILENAME, msg
 
 
 def _infer_batch_display_name(raw: str, loaded_from: str = "") -> str:
     """取得手機介面要顯示的策略檔名稱。"""
     source = str(loaded_from or "")
     if source.startswith("bundled:"):
-        return source.split(":", 1)[1] or BUNDLED_BATCH_009_FILENAME
+        return source.split(":", 1)[1] or BUNDLED_FALLBACK_FILENAME
     if source.startswith("mobile_upload:"):
         return source.split(":", 1)[1]
     if source.startswith("cloud:"):
@@ -1400,7 +1400,7 @@ with st.sidebar:
                 value=st.session_state.get("batch_cloud_url", DEFAULT_CLOUD_BATCH_JSON_URL),
                 key="batch_cloud_url",
             )
-            st.caption(f"最後備援內建策略：{BUNDLED_BATCH_009_FILENAME}")
+            st.caption(f"連線異常測試備援檔：{BUNDLED_FALLBACK_FILENAME}（不列入正式策略研究）")
             if st.button("使用手動連結載入", use_container_width=True):
                 try:
                     raw, loaded_from, _ = load_cloud_or_bundled_batch_json(cloud_url, show_message=True)
@@ -2232,7 +2232,7 @@ if mobile_mode:
     ):
         try:
             # 手機版必須與桌機版共用目前在雲端策略投放箱選取的檔案；
-            # 不再讀取寫死的 DEFAULT_CLOUD_BATCH_JSON_URL，也不回退內建 batch_009。
+            # 不再讀取寫死的 DEFAULT_CLOUD_BATCH_JSON_URL，也不回退內建雲端失效測試檔。
             raw = load_batch_json_from_drive_file(selected_cloud_file["id"])
             loaded_from = (
                 "gdrive:"
