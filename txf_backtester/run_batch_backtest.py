@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-run_batch_backtest.py - v0.4.6 命令列批次回測入口。
+run_batch_backtest.py - 命令列批次回測入口（適用 v0.6.4）。
 
 用途：
 - 不開 Streamlit 網頁。
@@ -18,7 +18,7 @@ v0.4.6 新增：
 範例：
     python run_batch_backtest.py
     python run_batch_backtest.py --batch "G:\\我的雲端硬碟\\MTX Test Record\\_策略投放箱\\strategy_batch_001.json"
-    python run_batch_backtest.py --batch sample_strategy_batch.json --record-dir output_test
+    python run_batch_backtest.py --batch 路徑/批次策略.json --record-dir 路徑/回測結果
     python run_batch_backtest.py --start 2015-01-01 --end 2023-12-31   # 樣本內調參
 """
 from __future__ import annotations
