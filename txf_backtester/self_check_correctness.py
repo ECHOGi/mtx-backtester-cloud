@@ -248,6 +248,73 @@ def main():
         cost=margin_cost,
     ))
 
+    # 17. ATR 標準化分段：使用訊號根 ATR，不得偷用進場根尚未完成的 ATR。
+    passed.append(run_case(
+        "atr_tier_uses_signal_bar_atr",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 125, "low": 99, "close": 115,
+             "atr": 100, "chandelier_long_m_2_5": 110, "chandelier_long_m_3_5": 116,
+             "chandelier_long_m_5_0": 120},
+        ],
+        base_params(
+            use_profit_tier_chandelier=True,
+            profit_tier_threshold_mode="entry_atr",
+            profit_tier_reference="max_favorable",
+            profit_tier_atr_multiples=(2, 4),
+            profit_tier_mults=(2.5, 3.5, 5.0),
+        ),
+        {"entry_price": 100.0, "exit_price": 115.0,
+         "exit_reason": "profit_tier_chandelier_3.5", "pnl_points": 15.0,
+         "entry_atr": 10.0, "max_favorable_atr_multiple": 2.5},
+    ))
+
+    # 18. ATR 門檻達標後排除 MACD 反向，持倉繼續由後續規則決定。
+    passed.append(run_case(
+        "atr_scaled_macd_exclusion",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "macd_hist": 1, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 145, "low": 99, "close": 120,
+             "atr": 80, "macd_hist": -1},
+            {"datetime": "2025-01-03", "open": 121, "high": 150, "low": 119, "close": 130,
+             "atr": 90, "macd_hist": -1},
+        ],
+        base_params(
+            use_macd_reverse=True,
+            use_profit_scaled_macd_exclusion=True,
+            profit_tier_threshold_mode="entry_atr",
+            profit_tier_reference="max_favorable",
+            macd_reverse_exclude_atr_multiple=4.0,
+        ),
+        {"entry_price": 100.0, "exit_price": 130.0,
+         "exit_reason": "end_of_data", "pnl_points": 30.0,
+         "entry_atr": 10.0, "max_favorable_atr_multiple": 5.0},
+    ))
+
+    # 19. 舊版固定金額分段仍可使用，確保歷史策略相容。
+    passed.append(run_case(
+        "amount_tier_backward_compatible",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 125, "low": 99, "close": 115,
+             "chandelier_long_m_2_5": 110, "chandelier_long_m_3_5": 116,
+             "chandelier_long_m_5_0": 120},
+        ],
+        base_params(
+            use_profit_tier_chandelier=True,
+            profit_tier_threshold_mode="amount",
+            profit_tier_reference="max_favorable",
+            profit_tier_amounts=(1000, 2000),
+            profit_tier_mults=(2.5, 3.5, 5.0),
+        ),
+        {"entry_price": 100.0, "exit_price": 115.0,
+         "exit_reason": "profit_tier_chandelier_3.5", "pnl_points": 15.0},
+        cost=CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1),
+    ))
+
     print("PASS", len(passed), "cases")
     for name in passed:
         print("-", name)

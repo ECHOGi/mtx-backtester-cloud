@@ -63,15 +63,21 @@ class StrategyParams:
     # v0.5.0：獲利分段吊燈（獲利越高，吊燈倍數可放寬）
     use_profit_tier_chandelier: bool = False
     profit_tier_chandelier_period: int = 22
-    # 金額門檻（元）。例：[7000, 10000] 代表 <7000、7000~10000、>=10000 三段
+    # 舊版固定金額門檻（元），保留向下相容。
     profit_tier_amounts: tuple = ()
-    # 各段吊燈倍數。數量需為 len(profit_tier_amounts)+1，例如 [2.5, 3.0, 3.5]
+    # v0.6.5：ATR 標準化門檻。例：[2, 4, 8] 代表最大順向浮盈 / 進場可用 ATR。
+    profit_tier_atr_multiples: tuple = ()
+    # amount=固定金額（舊版）；entry_atr=相對於進場可用 ATR（建議）。
+    profit_tier_threshold_mode: str = "amount"
+    # 各段吊燈倍數。數量需為門檻數量 + 1，例如 [2.5, 3.0, 3.5, 5.0]
     profit_tier_mults: tuple = ()
-    # v0.5.1：分段依據。current_unrealized=用當根收盤浮盈；max_favorable=用持倉以來最高浮盈。
+    # current_unrealized=用當根收盤浮盈；max_favorable=用持倉以來最高順向浮盈。
     profit_tier_reference: str = "current_unrealized"
-    # v0.5.1：獲利放大後，可排除 MACD 反向出場，改讓較寬的吊燈線決定出場。
+    # 獲利放大後，可排除 MACD 反向出場，改讓較寬的吊燈線決定出場。
     use_profit_scaled_macd_exclusion: bool = False
     macd_reverse_exclude_profit_amount: float = 0.0
+    # v0.6.5：ATR 模式下，達此 ATR 倍數後排除 MACD 反向。
+    macd_reverse_exclude_atr_multiple: float = 0.0
     use_macd_reverse: bool = True
     use_fixed_stop: bool = True
     stop_points: float = 100.0
@@ -96,6 +102,8 @@ class StrategyParams:
             clean["ma_periods"] = tuple(int(x) for x in clean["ma_periods"])
         if "profit_tier_amounts" in clean and clean["profit_tier_amounts"] is not None:
             clean["profit_tier_amounts"] = tuple(float(x) for x in clean["profit_tier_amounts"])
+        if "profit_tier_atr_multiples" in clean and clean["profit_tier_atr_multiples"] is not None:
+            clean["profit_tier_atr_multiples"] = tuple(float(x) for x in clean["profit_tier_atr_multiples"])
         if "profit_tier_mults" in clean and clean["profit_tier_mults"] is not None:
             clean["profit_tier_mults"] = tuple(float(x) for x in clean["profit_tier_mults"])
         return cls(**clean)
@@ -103,8 +111,10 @@ class StrategyParams:
 
 EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_profit_tier_chandelier", "profit_tier_chandelier_period",
-               "profit_tier_amounts", "profit_tier_mults", "profit_tier_reference",
+               "profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_threshold_mode",
+               "profit_tier_mults", "profit_tier_reference",
                "use_profit_scaled_macd_exclusion", "macd_reverse_exclude_profit_amount",
+               "macd_reverse_exclude_atr_multiple",
                "use_macd_reverse",
                "use_fixed_stop", "stop_points",
                "use_take_profit", "take_profit_points",

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.6.4 UI 重整版）。
+app.py - 台指期回測工具 Streamlit 介面（v0.6.5 ATR 標準化出場版）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -25,8 +25,8 @@ import urllib.request
 import zipfile
 
 
-APP_VERSION = "v0.6.4"
-APP_RELEASE_NAME = "UI 重整版"
+APP_VERSION = "v0.6.5"
+APP_RELEASE_NAME = "ATR 標準化出場版"
 
 
 def _safe_filename_part(text: str) -> str:
@@ -278,11 +278,13 @@ TRADE_COL_ZH = {
     "max_adverse_amount": "最大反向浮動金額",
     "max_favorable_points": "最大順向浮動點數",
     "max_favorable_amount": "最大順向浮動金額",
+    "entry_atr": "進場可用ATR",
+    "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
-TRADE_DISPLAY_COLS = ["訊號日", "進場日", "出場日", "方向", "進場價", "出場價",
-                      "口數", "損益點數", "損益金額", "持倉K棒數",
-                      "出場原因", "進場條件"]
+TRADE_DISPLAY_COLS = ["訊號日", "進場日", "出場日", "方向", "進場價", "進場可用ATR",
+                      "出場價", "口數", "損益點數", "損益金額", "最大順向浮盈ATR倍數",
+                      "持倉K棒數", "出場原因", "進場條件"]
 
 # ============ 條件目錄：類型 → 型態（多空通用、二層勾選） ============
 # PATTERNS[key] = (類型, 型態名稱, 簡短說明)；進場/出場/前提/排除皆可用
@@ -354,6 +356,7 @@ EXIT_DEFS = [
     ("use_take_profit",   "固定停利", "獲利達設定點數就出場，落袋為安"),
     ("use_trailing_stop", "移動停損", "從進場後最高（低）點回落設定點數出場"),
     ("use_chandelier",    "吊燈出場", "跌破 N 日極值 ± ATR×倍數的追蹤線出場"),
+    ("use_profit_tier_chandelier", "分段吊燈", "依浮盈相對 ATR 或固定金額切換吊燈倍數"),
     ("use_macd_reverse",  "MACD 反向出場", "MACD 柱狀圖轉向（多單轉負／空單轉正）出場"),
 ]
 
@@ -362,6 +365,14 @@ PARAM_DEFAULTS = {
     "bb_period": 20, "bb_std": 2.0,
     "ma_filter_enabled": True, "ma_filter_period": 20, "ma_filter_type": "SMA",
     "use_chandelier": True, "chandelier_period": 22, "chandelier_mult": 3.0,
+    "use_profit_tier_chandelier": False, "profit_tier_chandelier_period": 22,
+    "profit_tier_amounts": (), "profit_tier_atr_multiples": (2.0, 4.0, 8.0),
+    "profit_tier_threshold_mode": "entry_atr",
+    "profit_tier_mults": (2.5, 3.0, 3.5, 5.0),
+    "profit_tier_reference": "max_favorable",
+    "use_profit_scaled_macd_exclusion": False,
+    "macd_reverse_exclude_profit_amount": 0.0,
+    "macd_reverse_exclude_atr_multiple": 4.0,
     "use_macd_reverse": True,
     "use_fixed_stop": True, "stop_points": 100.0,
     "use_take_profit": False, "take_profit_points": 200.0,
@@ -500,6 +511,11 @@ def cond_spec(key: str, p: dict, th: dict) -> dict:
 
 
 EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
+               "use_profit_tier_chandelier", "profit_tier_chandelier_period",
+               "profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_threshold_mode",
+               "profit_tier_mults", "profit_tier_reference",
+               "use_profit_scaled_macd_exclusion", "macd_reverse_exclude_profit_amount",
+               "macd_reverse_exclude_atr_multiple",
                "use_macd_reverse", "use_fixed_stop", "stop_points",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]
@@ -606,6 +622,15 @@ def zh_entry_reason(s) -> str:
     return s.replace(" AND ", " 且 ").replace(" OR ", " 或 ")
 
 
+def _zh_exit_reason(value):
+    if value in EXIT_REASON_LABELS:
+        return EXIT_REASON_LABELS[value]
+    m = re.fullmatch(r"profit_tier_chandelier_([0-9.]+)", str(value))
+    if m:
+        return f"分段吊燈出場（吊燈 ATR×{m.group(1)}）"
+    return value
+
+
 def zh_trades(trades: pd.DataFrame) -> pd.DataFrame:
     if trades is None or trades.empty:
         return pd.DataFrame(columns=TRADE_DISPLAY_COLS)
@@ -614,7 +639,7 @@ def zh_trades(trades: pd.DataFrame) -> pd.DataFrame:
         if c in t.columns:
             t[c] = pd.to_datetime(t[c]).dt.strftime("%Y/%m/%d")
     t["direction"] = t["direction"].map(DIRECTION_LABELS).fillna(t["direction"])
-    t["exit_reason"] = t["exit_reason"].map(EXIT_REASON_LABELS).fillna(t["exit_reason"])
+    t["exit_reason"] = t["exit_reason"].map(_zh_exit_reason)
     if "entry_reason" in t.columns:
         t["entry_reason"] = t["entry_reason"].map(zh_entry_reason)
     return t.rename(columns=TRADE_COL_ZH)
@@ -1086,6 +1111,9 @@ def apply_loaded_params(d: dict):
         strat["th"].update({k: v for k, v in ui.get("th", {}).items() if k in strat["th"]})
         strat["params"].update({k: v for k, v in ui.get("params", {}).items()
                                 if k in strat["params"]})
+        for key in ("profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_mults"):
+            if key in strat["params"] and strat["params"][key] is not None:
+                strat["params"][key] = tuple(float(x) for x in strat["params"][key])
         strat["direction"] = d.get("direction", strat["direction"])
     else:  # 舊版 JSON：回填參數與出場，組合維持預設
         p = params_from_config(d) if ("entry_long" in d or "exit" in d) else None
@@ -1124,8 +1152,16 @@ def _seed_dialog():
         _seed_combo(f"s_S{ci}", strat["combos_short"][ci])
     _seed_combo("s_XL", strat.get("exit_long", {}))
     _seed_combo("s_XS", strat.get("exit_short", {}))
+    tuple_fields = {"profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_mults"}
     for k, v in strat["params"].items():
-        st.session_state["s_p_" + k] = v
+        if k not in tuple_fields:
+            st.session_state["s_p_" + k] = v
+    st.session_state["s_p_profit_tier_amounts_text"] = ", ".join(
+        f"{float(x):g}" for x in strat["params"].get("profit_tier_amounts", ()))
+    st.session_state["s_p_profit_tier_atr_multiples_text"] = ", ".join(
+        f"{float(x):g}" for x in strat["params"].get("profit_tier_atr_multiples", (2, 4, 8)))
+    st.session_state["s_p_profit_tier_mults_text"] = ", ".join(
+        f"{float(x):g}" for x in strat["params"].get("profit_tier_mults", (2.5, 3, 3.5, 5)))
     for k, v in strat["th"].items():
         st.session_state["s_t_" + k] = v
     st.session_state["s_direction_label"] = DIR_LABELS_INV[strat["direction"]]
@@ -1148,6 +1184,14 @@ def _collect_combo(prefix: str) -> dict:
             "exclude": _collect_slot(prefix + "x")}
 
 
+def _parse_number_list(text, fallback=()):
+    try:
+        values = tuple(float(x.strip()) for x in str(text).split(",") if x.strip())
+        return values if values else tuple(fallback)
+    except (TypeError, ValueError):
+        return tuple(fallback)
+
+
 def _collect_dialog() -> dict:
     strat = {"params": {}, "th": {}, "combos_long": [], "combos_short": []}
     for ci in range(2):
@@ -1155,9 +1199,19 @@ def _collect_dialog() -> dict:
         strat["combos_short"].append(_collect_combo(f"s_S{ci}"))
     strat["exit_long"] = _collect_combo("s_XL")
     strat["exit_short"] = _collect_combo("s_XS")
+    tuple_fields = {"profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_mults"}
     for k, dv in PARAM_DEFAULTS.items():
+        if k in tuple_fields:
+            continue
         v = st.session_state.get("s_p_" + k, dv)
         strat["params"][k] = type(dv)(v) if not isinstance(dv, bool) else bool(v)
+    strat["params"]["profit_tier_amounts"] = _parse_number_list(
+        st.session_state.get("s_p_profit_tier_amounts_text", ""), ())
+    strat["params"]["profit_tier_atr_multiples"] = _parse_number_list(
+        st.session_state.get("s_p_profit_tier_atr_multiples_text", "2, 4, 8"), (2, 4, 8))
+    strat["params"]["profit_tier_mults"] = _parse_number_list(
+        st.session_state.get("s_p_profit_tier_mults_text", "2.5, 3, 3.5, 5"),
+        (2.5, 3.0, 3.5, 5.0))
     for k, dv in TH_DEFAULTS.items():
         strat["th"][k] = st.session_state.get("s_t_" + k, dv)
     strat["direction"] = DIR_LABELS[st.session_state.get("s_direction_label", "多空雙向")]
@@ -1256,6 +1310,45 @@ def strategy_dialog():
                 st.number_input("吊燈週期", 2, 200, key="s_p_chandelier_period")
                 st.number_input("吊燈 ATR 倍數", 0.5, 10.0, step=0.1, key="s_p_chandelier_mult")
             st.checkbox("MACD 反向出場", key="s_p_use_macd_reverse", help="MACD 柱狀圖反向時，以收盤確認出場")
+        with st.expander("ATR 標準化分段出場", expanded=False):
+            _compact_header(
+                "相對波動階梯",
+                "以『最大順向浮盈點數 ÷ 進場前已完成 K 棒 ATR』決定吊燈倍數。"
+                "不使用進場當根尚未完成的 ATR，避免未來函數。")
+            use_tier = st.checkbox(
+                "啟用分段吊燈", key="s_p_use_profit_tier_chandelier",
+                help="浮盈相對 ATR 越大，可切換到較寬的吊燈倍數")
+            if use_tier:
+                st.selectbox(
+                    "門檻單位", ["entry_atr", "amount"], key="s_p_profit_tier_threshold_mode",
+                    format_func=lambda x: "進場可用 ATR 倍數（建議）" if x == "entry_atr" else "固定金額（舊策略相容）")
+                st.selectbox(
+                    "分段依據", ["max_favorable", "current_unrealized"], key="s_p_profit_tier_reference",
+                    format_func=lambda x: "持倉最大順向浮盈" if x == "max_favorable" else "當根收盤浮盈")
+                st.number_input("分段吊燈週期", 2, 200, key="s_p_profit_tier_chandelier_period")
+                if st.session_state.get("s_p_profit_tier_threshold_mode", "entry_atr") == "entry_atr":
+                    st.text_input(
+                        "ATR 階梯（逗號分隔）", key="s_p_profit_tier_atr_multiples_text",
+                        help="例如 2, 4, 8；須由小到大")
+                else:
+                    st.text_input(
+                        "金額階梯（逗號分隔）", key="s_p_profit_tier_amounts_text",
+                        help="僅供舊策略相容，新的研究建議使用 ATR 倍數")
+                st.text_input(
+                    "各段吊燈 ATR 倍數", key="s_p_profit_tier_mults_text",
+                    help="數量必須比階梯多 1，例如三個階梯填四個倍數")
+                use_exclusion = st.checkbox(
+                    "達門檻後排除 MACD 反向", key="s_p_use_profit_scaled_macd_exclusion",
+                    help="避免大行情被短期 MACD 反向提早洗出")
+                if use_exclusion:
+                    if st.session_state.get("s_p_profit_tier_threshold_mode", "entry_atr") == "entry_atr":
+                        st.number_input(
+                            "排除 MACD 的 ATR 倍數", 0.1, 100.0, step=0.5,
+                            key="s_p_macd_reverse_exclude_atr_multiple")
+                    else:
+                        st.number_input(
+                            "排除 MACD 的浮盈金額", 1.0, 10000000.0, step=1000.0,
+                            key="s_p_macd_reverse_exclude_profit_amount")
         st.divider()
         _compact_header("條件出場", "符合條件組合即平倉；全部留空代表不使用。")
         _combo_editor("s_XL", "多單條件出場")
@@ -1333,7 +1426,7 @@ def handle_pending_dialog_submit():
 # 提交後援處理（fragment 與整頁重跑皆涵蓋）
 handle_pending_dialog_submit()
 
-# ================= 左側控制欄（v0.6.4 精簡重整） =================
+# ================= 左側控制欄（v0.6.5 延續精簡版） =================
 selected_cloud_file = None
 cloud_mode = "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情"
 manual_ready = False

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-run_batch_backtest.py - 命令列批次回測入口（適用 v0.6.4）。
+run_batch_backtest.py - 命令列批次回測入口（適用 v0.6.5）。
 
 用途：
 - 不開 Streamlit 網頁。
@@ -87,6 +87,8 @@ TRADE_COL_ZH = {
     "max_adverse_amount": "最大反向浮動金額",
     "max_favorable_points": "最大順向浮動點數",
     "max_favorable_amount": "最大順向浮動金額",
+    "entry_atr": "進場可用ATR",
+    "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
 
@@ -235,6 +237,15 @@ def newest_json_in_dropbox(record_dir: str) -> Path:
     return files[0]
 
 
+def _zh_exit_reason(value):
+    if value in EXIT_REASON_LABELS:
+        return EXIT_REASON_LABELS[value]
+    m = re.fullmatch(r"profit_tier_chandelier_([0-9.]+)", str(value))
+    if m:
+        return f"分段吊燈出場（吊燈 ATR×{m.group(1)}）"
+    return value
+
+
 def zh_trades(trades: pd.DataFrame) -> pd.DataFrame:
     if trades is None or trades.empty:
         return pd.DataFrame()
@@ -245,7 +256,7 @@ def zh_trades(trades: pd.DataFrame) -> pd.DataFrame:
     if "direction" in t.columns:
         t["direction"] = t["direction"].map(DIRECTION_LABELS).fillna(t["direction"])
     if "exit_reason" in t.columns:
-        t["exit_reason"] = t["exit_reason"].map(EXIT_REASON_LABELS).fillna(t["exit_reason"])
+        t["exit_reason"] = t["exit_reason"].map(_zh_exit_reason)
     return t.rename(columns=TRADE_COL_ZH)
 
 

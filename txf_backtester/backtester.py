@@ -8,6 +8,7 @@ backtester.py - 單一持倉回測引擎（避免 look-ahead bias）。
     斷頭開盤跳空 > 固定停損 > 固定停利 > 移動停損 > 斷頭盤中觸價
     > 吊燈出場 > MACD 反向 > 條件出場
   * v0.5.1 起可設定「獲利放大後排除 MACD 反向」，讓分段吊燈真正主導後段出場。
+  * v0.6.5 起支援以「最大順向浮盈 ÷ 進場前已完成 K 棒 ATR」作為相對市場波動階梯。
   * 停損/停利/移動停損：盤中觸價，以觸價價位成交；若開盤跳空超過則以開盤價
   * 吊燈 / MACD 反向：收盤確認，以「收盤價」出場
 - 單一持倉：只有空手時才接受新訊號；不加碼、不反手
@@ -77,8 +78,12 @@ def _favorable_points(entry_price: float, direction: int, row: pd.Series) -> flo
     return max(0.0, float(entry_price) - float(row["low"]))
 
 
+def _current_unrealized_points(entry_price: float, direction: int, row: pd.Series) -> float:
+    return (float(row["close"]) - float(entry_price)) * int(direction)
+
+
 def _current_unrealized_amount(entry_price: float, direction: int, row: pd.Series, cost: CostModel) -> float:
-    return (float(row["close"]) - float(entry_price)) * int(direction) * float(cost.point_value) * int(cost.quantity)
+    return _current_unrealized_points(entry_price, direction, row) * float(cost.point_value) * int(cost.quantity)
 
 
 def _tier_reference_amount(pos: dict, entry_price: float, direction: int, row: pd.Series, cost: CostModel, p) -> float:
@@ -93,14 +98,53 @@ def _tier_reference_amount(pos: dict, entry_price: float, direction: int, row: p
     return _current_unrealized_amount(entry_price, direction, row, cost)
 
 
+def _tier_reference_points(pos: dict, entry_price: float, direction: int, row: pd.Series, p) -> float:
+    ref = str(getattr(p, "profit_tier_reference", "current_unrealized") or "current_unrealized").lower()
+    if ref in {"max_favorable", "max_floating_profit", "max_profit", "peak_profit"}:
+        return float(pos.get("max_favorable_points", 0.0))
+    return _current_unrealized_points(entry_price, direction, row)
+
+
+def _positive_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(number) or number <= 0:
+        return None
+    return number
+
+
+def _profit_tier_mode(p) -> str:
+    mode = str(getattr(p, "profit_tier_threshold_mode", "amount") or "amount").lower()
+    return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "amount"
+
+
+def _tier_reference_value(pos: dict, entry_price: float, direction: int, row: pd.Series,
+                          cost: CostModel, p) -> float:
+    """回傳目前分段比較值；ATR 模式使用進場前已完成 K 棒 ATR，避免未來函數。"""
+    if _profit_tier_mode(p) == "entry_atr":
+        entry_atr = _positive_float(pos.get("entry_atr"))
+        if entry_atr is None:
+            return 0.0
+        return _tier_reference_points(pos, entry_price, direction, row, p) / entry_atr
+    return _tier_reference_amount(pos, entry_price, direction, row, cost, p)
+
+
+def _tier_thresholds(p):
+    if _profit_tier_mode(p) == "entry_atr":
+        return getattr(p, "profit_tier_atr_multiples", ())
+    return getattr(p, "profit_tier_amounts", ())
+
+
 def _chandelier_suffix(mult: float) -> str:
     return str(float(mult)).replace(".", "_").replace("-", "m")
 
 
-def _select_profit_tier_mult(unrealized_amount: float, amounts, mults, fallback: float) -> float:
-    """依目前浮盈金額選擇吊燈倍數。amounts 為升冪門檻，mults 比 amounts 多一段。"""
+def _select_profit_tier_mult(reference_value: float, thresholds_raw, mults, fallback: float) -> float:
+    """依目前分段比較值選擇吊燈倍數；門檻需升冪，倍數數量須多一段。"""
     try:
-        thresholds = [float(x) for x in (amounts or [])]
+        thresholds = [float(x) for x in (thresholds_raw or [])]
         values = [float(x) for x in (mults or [])]
     except Exception:
         return float(fallback)
@@ -108,7 +152,7 @@ def _select_profit_tier_mult(unrealized_amount: float, amounts, mults, fallback:
         return float(fallback)
     tier = 0
     for th in thresholds:
-        if float(unrealized_amount) >= th:
+        if float(reference_value) >= th:
             tier += 1
         else:
             break
@@ -154,6 +198,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "signal_i": pending["signal_i"],
                 "signal_date": pending["signal_date"],
                 "entry_reason": pending["entry_reason"],
+                # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
+                "entry_atr": pending.get("signal_atr"),
                 "highest": row["high"],  # 供移動停損用（本根結束後才生效）
                 "lowest": row["low"],
                 "max_adverse_points": _adverse_points(entry_price, d, row),
@@ -233,10 +279,10 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             if exit_price is None and (p.use_chandelier or getattr(p, "use_profit_tier_chandelier", False)):
                 ch_label = "chandelier"
                 if getattr(p, "use_profit_tier_chandelier", False):
-                    tier_amount = _tier_reference_amount(pos, ep, d, row, cost, p)
+                    tier_value = _tier_reference_value(pos, ep, d, row, cost, p)
                     mult = _select_profit_tier_mult(
-                        tier_amount,
-                        getattr(p, "profit_tier_amounts", ()),
+                        tier_value,
+                        _tier_thresholds(p),
                         getattr(p, "profit_tier_mults", ()),
                         getattr(p, "chandelier_mult", 3.0),
                     )
@@ -261,9 +307,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             # v0.5.1：若已達指定最高浮盈，可排除 MACD 反向，避免獲利擴大後被短期反向訊號提前洗出。
             macd_reverse_blocked = False
             if exit_price is None and getattr(p, "use_profit_scaled_macd_exclusion", False):
-                block_at = float(getattr(p, "macd_reverse_exclude_profit_amount", 0.0) or 0.0)
-                ref_amt = _tier_reference_amount(pos, ep, d, row, cost, p)
-                if ref_amt >= block_at:
+                if _profit_tier_mode(p) == "entry_atr":
+                    block_at = float(getattr(p, "macd_reverse_exclude_atr_multiple", 0.0) or 0.0)
+                else:
+                    block_at = float(getattr(p, "macd_reverse_exclude_profit_amount", 0.0) or 0.0)
+                ref_value = _tier_reference_value(pos, ep, d, row, cost, p)
+                if block_at > 0 and ref_value >= block_at:
                     macd_reverse_blocked = True
 
             if exit_price is None and p.use_macd_reverse and (not macd_reverse_blocked) and "macd_hist" in df.columns:
@@ -296,6 +345,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             max_adverse_amount = max_adverse_points * cost.point_value * q
             max_favorable_points = float(pos.get("max_favorable_points", 0.0))
             max_favorable_amount = max_favorable_points * cost.point_value * q
+            entry_atr = _positive_float(pos.get("entry_atr"))
+            max_favorable_atr_multiple = (max_favorable_points / entry_atr) if entry_atr else None
             required_safety_capital = cost.original_margin_amount + max_adverse_amount
             trades.append({
                 "signal_date": pos["signal_date"],
@@ -318,6 +369,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "max_adverse_amount": round(max_adverse_amount, 1),
                 "max_favorable_points": round(max_favorable_points, 2),
                 "max_favorable_amount": round(max_favorable_amount, 1),
+                "entry_atr": round(entry_atr, 4) if entry_atr else None,
+                "max_favorable_atr_multiple": round(max_favorable_atr_multiple, 4)
+                    if max_favorable_atr_multiple is not None else None,
                 "required_safety_capital": round(required_safety_capital, 1),
             })
             realized += amount
@@ -331,6 +385,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_i": i,
                     "signal_date": dt,
                     "entry_reason": _entry_reason(row, "long"),
+                    "signal_atr": _positive_float(row.get("atr")),
                 }
             elif bool(row["short_entry"]):
                 pending = {
@@ -338,6 +393,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_i": i,
                     "signal_date": dt,
                     "entry_reason": _entry_reason(row, "short"),
+                    "signal_atr": _positive_float(row.get("atr")),
                 }
 
         # ---- 5) 更新移動停損追蹤極值（本根結束後生效，避免盤中未來函數）----
@@ -370,6 +426,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "exit_reason", "entry_reason",
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
+        "entry_atr", "max_favorable_atr_multiple",
         "required_safety_capital"])
     equity_df = pd.DataFrame(equity_rows)
     return trades_df, equity_df
