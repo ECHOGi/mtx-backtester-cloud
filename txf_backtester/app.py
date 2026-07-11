@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py - 台指期回測工具 Streamlit 介面（v0.6.5 ATR 標準化出場版）。
+app.py - 台指期回測工具 Streamlit 介面（v0.6.6 ATR 停損與風險上限版）。
 
 v0.3.3 重點（回測核心零修改）：
 - 「策略設定面板」彈出視窗（st.dialog + st.form）：
@@ -25,8 +25,8 @@ import urllib.request
 import zipfile
 
 
-APP_VERSION = "v0.6.5"
-APP_RELEASE_NAME = "ATR 標準化出場版"
+APP_VERSION = "v0.6.6"
+APP_RELEASE_NAME = "ATR 停損與風險上限版"
 
 
 def _safe_filename_part(text: str) -> str:
@@ -279,10 +279,14 @@ TRADE_COL_ZH = {
     "max_favorable_points": "最大順向浮動點數",
     "max_favorable_amount": "最大順向浮動金額",
     "entry_atr": "進場可用ATR",
+    "planned_stop_points": "預定停損點數",
+    "planned_stop_risk_amount": "預定停損風險金額",
+    "entry_risk_cap_amount": "單筆風險上限",
     "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
 TRADE_DISPLAY_COLS = ["訊號日", "進場日", "出場日", "方向", "進場價", "進場可用ATR",
+                      "預定停損點數", "預定停損風險金額", "單筆風險上限",
                       "出場價", "口數", "損益點數", "損益金額", "最大順向浮盈ATR倍數",
                       "持倉K棒數", "出場原因", "進場條件"]
 
@@ -374,7 +378,9 @@ PARAM_DEFAULTS = {
     "macd_reverse_exclude_profit_amount": 0.0,
     "macd_reverse_exclude_atr_multiple": 4.0,
     "use_macd_reverse": True,
-    "use_fixed_stop": True, "stop_points": 100.0,
+    "use_fixed_stop": True, "stop_threshold_mode": "points",
+    "stop_points": 100.0, "stop_atr_multiple": 0.75,
+    "use_entry_risk_cap": False, "max_entry_risk_amount": 20000.0,
     "use_take_profit": False, "take_profit_points": 200.0,
     "use_trailing_stop": False, "trailing_points": 150.0,
     "kd_period": 9, "rsi_period": 14, "atr_period": 14, "vol_ma_period": 20,
@@ -1295,9 +1301,22 @@ def strategy_dialog():
         _compact_header("出場方式", "可複選。觸價類依序檢查：固定停損、固定停利、移動停損；收盤類再檢查吊燈、MACD 與條件出場。")
         xc = st.columns(2)
         with xc[0]:
-            use_stop = st.checkbox("固定停損", key="s_p_use_fixed_stop", help="虧損達設定點數就出場")
+            use_stop = st.checkbox("停損", key="s_p_use_fixed_stop", help="可選固定點數或進場可用 ATR 倍數")
             if use_stop:
-                st.number_input("停損點數", 1.0, 5000.0, step=10.0, key="s_p_stop_points")
+                st.selectbox(
+                    "停損尺度", ["entry_atr", "points"], key="s_p_stop_threshold_mode",
+                    format_func=lambda x: "進場可用 ATR 倍數（建議）" if x == "entry_atr" else "固定點數（舊策略相容）")
+                if st.session_state.get("s_p_stop_threshold_mode", "entry_atr") == "entry_atr":
+                    st.number_input("停損 ATR 倍數", 0.1, 10.0, step=0.05, key="s_p_stop_atr_multiple",
+                                    help="固定使用訊號根 ATR，不使用進場當根尚未完成的波動")
+                    use_risk_cap = st.checkbox(
+                        "超過單筆風險上限則不進場", key="s_p_use_entry_risk_cap",
+                        help="預定停損點數×每點價值×口數超過上限時略過；跳空仍可能使實際損失超標")
+                    if use_risk_cap:
+                        st.number_input("單筆最大可承受金額", 1000.0, 1000000.0, step=1000.0,
+                                        key="s_p_max_entry_risk_amount")
+                else:
+                    st.number_input("停損點數", 1.0, 5000.0, step=10.0, key="s_p_stop_points")
             use_tp = st.checkbox("固定停利", key="s_p_use_take_profit", help="獲利達設定點數就出場")
             if use_tp:
                 st.number_input("停利點數", 1.0, 10000.0, step=10.0, key="s_p_take_profit_points")
@@ -1426,7 +1445,7 @@ def handle_pending_dialog_submit():
 # 提交後援處理（fragment 與整頁重跑皆涵蓋）
 handle_pending_dialog_submit()
 
-# ================= 左側控制欄（v0.6.5 延續精簡版） =================
+# ================= 左側控制欄（v0.6.6 延續精簡版） =================
 selected_cloud_file = None
 cloud_mode = "前後期行情對照：2015～2023 一般行情 vs 2024～資料末日牛市行情"
 manual_ready = False
@@ -2654,6 +2673,7 @@ else:
         adv_keys = ["總損益(點)", "最大回撤(%)", "策略標準最大回撤率(%)",
                     "市場期間漲跌幅(%)", "市場最大回撤率(%)", "相對市場回撤倍數",
                     "回撤相對市場漲跌幅倍數", "獲利交易加權保留率(%)",
+                    "風險上限跳過進場次數", "ATR缺值跳過進場次數",
                     "獲利交易中位保留率(%)", "曾有浮盈交易筆數",
                     "浮盈轉虧筆數", "浮盈轉虧率(%)",
                     "獲利因子", "期望值(元/筆)",

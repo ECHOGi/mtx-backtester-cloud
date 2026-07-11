@@ -293,7 +293,51 @@ def main():
          "entry_atr": 10.0, "max_favorable_atr_multiple": 5.0},
     ))
 
-    # 19. 舊版固定金額分段仍可使用，確保歷史策略相容。
+    # 19. ATR 停損固定使用訊號根 ATR：10 × 0.75 = 7.5 點。
+    passed.append(run_case(
+        "atr_stop_uses_signal_bar_atr",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 102, "low": 92, "close": 95,
+             "atr": 100},
+        ],
+        base_params(use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=0.75),
+        {"entry_price": 100.0, "exit_price": 92.5, "exit_reason": "fixed_stop",
+         "pnl_points": -7.5, "entry_atr": 10.0, "planned_stop_points": 7.5,
+         "planned_stop_risk_amount": 375.0},
+    ))
+
+    # 20. 風險上限未超標時允許進場。
+    passed.append(run_case(
+        "entry_risk_cap_allows_trade",
+        [
+            {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+             "atr": 10, "long_entry": True},
+            {"datetime": "2025-01-02", "open": 100, "high": 110, "low": 99, "close": 108},
+        ],
+        base_params(use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=1.0,
+                    use_entry_risk_cap=True, max_entry_risk_amount=500.0),
+        {"entry_price": 100.0, "exit_price": 108.0, "exit_reason": "end_of_data",
+         "planned_stop_points": 10.0, "planned_stop_risk_amount": 500.0,
+         "entry_risk_cap_amount": 500.0},
+    ))
+
+    # 21. 風險上限超標時略過進場，並在權益曲線留下累積次數。
+    df_skip = df_from_rows([
+        {"datetime": "2025-01-01", "open": 90, "high": 95, "low": 85, "close": 92,
+         "atr": 10, "long_entry": True},
+        {"datetime": "2025-01-02", "open": 100, "high": 110, "low": 99, "close": 108},
+    ])
+    p_skip = base_params(use_fixed_stop=True, stop_threshold_mode="entry_atr", stop_atr_multiple=1.0,
+                         use_entry_risk_cap=True, max_entry_risk_amount=499.0)
+    trades_skip, equity_skip = run_backtest(
+        df_skip, CostModel(point_value=50, fee=0, slippage_points=0, tax_rate=0, quantity=1), p_skip)
+    assert trades_skip.empty, "entry_risk_cap_skips_trade: expected no trade"
+    assert int(equity_skip["risk_cap_skipped_entries"].iloc[-1]) == 1
+    passed.append("entry_risk_cap_skips_trade")
+
+    # 22. 舊版固定金額分段仍可使用，確保歷史策略相容。
     passed.append(run_case(
         "amount_tier_backward_compatible",
         [

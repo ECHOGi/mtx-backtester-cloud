@@ -51,6 +51,21 @@ def _positive_float(value) -> float | None:
     return number
 
 
+def _stop_threshold_mode(p) -> str:
+    mode = str(getattr(p, "stop_threshold_mode", "points") or "points").lower()
+    return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "points"
+
+
+def _stop_distance_points(p, entry_atr) -> float | None:
+    if _stop_threshold_mode(p) == "entry_atr":
+        atr_value = _positive_float(entry_atr)
+        multiple = _positive_float(getattr(p, "stop_atr_multiple", None))
+        if atr_value is None or multiple is None:
+            return None
+        return atr_value * multiple
+    return _positive_float(getattr(p, "stop_points", None))
+
+
 def _favorable_points(entry_price: float, direction: int, row: pd.Series) -> float:
     if direction == 1:
         return max(0.0, float(row["high"]) - float(entry_price))
@@ -121,7 +136,8 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
                 exit_reason = "margin_call"
 
         if exit_price is None and p.use_fixed_stop:
-            stop = entry_price - d * p.stop_points
+            stop_distance = _stop_distance_points(p, entry_atr)
+            stop = entry_price - d * float(stop_distance or 0.0)
             if d == 1 and row["low"] <= stop:
                 exit_price = min(row["open"], stop)
                 exit_reason = "fixed_stop"
@@ -228,7 +244,8 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
         "signal_date", "signal_bar_index", "entry_execution_date", "entry_bar_index",
         "exit_date", "exit_bar_index", "direction", "entry_price", "exit_price",
         "pnl_points", "pnl_amount", "exit_reason", "entry_reason",
-        "entry_atr", "max_favorable_atr_multiple",
+        "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
+        "entry_risk_cap_amount", "max_favorable_atr_multiple",
     ]
     for c in required_trade_cols:
         rows.append({"check": f"required_column:{c}",

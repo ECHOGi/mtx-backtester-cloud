@@ -9,6 +9,7 @@ backtester.py - 單一持倉回測引擎（避免 look-ahead bias）。
     > 吊燈出場 > MACD 反向 > 條件出場
   * v0.5.1 起可設定「獲利放大後排除 MACD 反向」，讓分段吊燈真正主導後段出場。
   * v0.6.5 起支援以「最大順向浮盈 ÷ 進場前已完成 K 棒 ATR」作為相對市場波動階梯。
+  * v0.6.6 起支援「進場 ATR × 倍數」停損，並可在預定停損風險超過上限時略過進場。
   * 停損/停利/移動停損：盤中觸價，以觸價價位成交；若開盤跳空超過則以開盤價
   * 吊燈 / MACD 反向：收盤確認，以「收盤價」出場
 - 單一持倉：只有空手時才接受新訊號；不加碼、不反手
@@ -115,6 +116,29 @@ def _positive_float(value) -> float | None:
     return number
 
 
+def _stop_threshold_mode(p) -> str:
+    mode = str(getattr(p, "stop_threshold_mode", "points") or "points").lower()
+    return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "points"
+
+
+def _stop_distance_points(p, entry_atr) -> float | None:
+    """回傳本筆預定停損距離；ATR 模式固定使用訊號根 ATR。"""
+    if _stop_threshold_mode(p) == "entry_atr":
+        atr_value = _positive_float(entry_atr)
+        multiple = _positive_float(getattr(p, "stop_atr_multiple", None))
+        if atr_value is None or multiple is None:
+            return None
+        return atr_value * multiple
+    return _positive_float(getattr(p, "stop_points", None))
+
+
+def _planned_stop_risk_amount(stop_distance_points, cost: CostModel) -> float | None:
+    distance = _positive_float(stop_distance_points)
+    if distance is None:
+        return None
+    return distance * float(cost.point_value) * max(int(cost.quantity), 1)
+
+
 def _profit_tier_mode(p) -> str:
     mode = str(getattr(p, "profit_tier_threshold_mode", "amount") or "amount").lower()
     return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "amount"
@@ -180,6 +204,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     pos = None        # 目前持倉 dict
     pending = None    # 前一根收盤產生、等待下一根開盤執行的訊號 dict
     realized = 0.0    # 已實現累積損益（元）
+    risk_cap_skipped_entries = 0
+    missing_atr_skipped_entries = 0
 
     for i in range(n):
         row = df.iloc[i]
@@ -189,23 +215,49 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         if pos is None and pending is not None:
             d = 1 if pending["direction"] == "long" else -1
             entry_price = row["open"] + d * cost.slippage_points  # 不利方向滑價
-            pos = {
-                "direction": d,
-                "entry_price": entry_price,
-                "entry_i": i,
-                "entry_date": dt,                 # 相容舊欄位：實際進場日
-                "entry_execution_date": dt,       # v0.3 明確標示執行日
-                "signal_i": pending["signal_i"],
-                "signal_date": pending["signal_date"],
-                "entry_reason": pending["entry_reason"],
-                # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
-                "entry_atr": pending.get("signal_atr"),
-                "highest": row["high"],  # 供移動停損用（本根結束後才生效）
-                "lowest": row["low"],
-                "max_adverse_points": _adverse_points(entry_price, d, row),
-                "max_favorable_points": _favorable_points(entry_price, d, row),
-                "max_favorable_amount": _favorable_points(entry_price, d, row) * cost.point_value * cost.quantity,
-            }
+            entry_atr = pending.get("signal_atr")
+            planned_stop_points = (_stop_distance_points(p, entry_atr)
+                                   if getattr(p, "use_fixed_stop", False) else None)
+            planned_stop_risk_amount = _planned_stop_risk_amount(planned_stop_points, cost)
+
+            skip_entry = False
+            if (getattr(p, "use_fixed_stop", False)
+                    and _stop_threshold_mode(p) == "entry_atr"
+                    and planned_stop_points is None):
+                # ATR 尚未形成時，不可用未完成資料猜測停損距離。
+                missing_atr_skipped_entries += 1
+                skip_entry = True
+            cap = _positive_float(getattr(p, "max_entry_risk_amount", None))
+            if (not skip_entry and getattr(p, "use_entry_risk_cap", False)
+                    and _stop_threshold_mode(p) == "entry_atr"
+                    and cap is not None and planned_stop_risk_amount is not None
+                    and planned_stop_risk_amount > cap):
+                risk_cap_skipped_entries += 1
+                skip_entry = True
+
+            if not skip_entry:
+                pos = {
+                    "direction": d,
+                    "entry_price": entry_price,
+                    "entry_i": i,
+                    "entry_date": dt,                 # 相容舊欄位：實際進場日
+                    "entry_execution_date": dt,       # v0.3 明確標示執行日
+                    "signal_i": pending["signal_i"],
+                    "signal_date": pending["signal_date"],
+                    "entry_reason": pending["entry_reason"],
+                    # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
+                    "entry_atr": entry_atr,
+                    "planned_stop_points": planned_stop_points,
+                    "planned_stop_risk_amount": planned_stop_risk_amount,
+                    "entry_risk_cap_amount": cap
+                    if (getattr(p, "use_entry_risk_cap", False)
+                        and _stop_threshold_mode(p) == "entry_atr") else None,
+                    "highest": row["high"],  # 供移動停損用（本根結束後才生效）
+                    "lowest": row["low"],
+                    "max_adverse_points": _adverse_points(entry_price, d, row),
+                    "max_favorable_points": _favorable_points(entry_price, d, row),
+                    "max_favorable_amount": _favorable_points(entry_price, d, row) * cost.point_value * cost.quantity,
+                }
             pending = None
 
         # ---- 2) 出場判斷 ----
@@ -232,9 +284,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     exit_price = row["open"]
                     exit_reason = "margin_call"
 
-            # a) 固定停損（盤中觸價）
+            # a) 停損（固定點數或進場 ATR 倍數；盤中觸價）
             if exit_price is None and p.use_fixed_stop:
-                stop = ep - d * p.stop_points
+                stop_distance = _positive_float(pos.get("planned_stop_points"))
+                if stop_distance is None:
+                    stop_distance = _stop_distance_points(p, pos.get("entry_atr"))
+                stop = ep - d * float(stop_distance or 0.0)
                 if d == 1 and row["low"] <= stop:
                     exit_price = min(row["open"], stop)
                     exit_reason = "fixed_stop"
@@ -370,6 +425,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "max_favorable_points": round(max_favorable_points, 2),
                 "max_favorable_amount": round(max_favorable_amount, 1),
                 "entry_atr": round(entry_atr, 4) if entry_atr else None,
+                "planned_stop_points": round(float(pos.get("planned_stop_points")), 4)
+                    if _positive_float(pos.get("planned_stop_points")) else None,
+                "planned_stop_risk_amount": round(float(pos.get("planned_stop_risk_amount")), 1)
+                    if _positive_float(pos.get("planned_stop_risk_amount")) else None,
+                "entry_risk_cap_amount": round(float(pos.get("entry_risk_cap_amount")), 1)
+                    if _positive_float(pos.get("entry_risk_cap_amount")) else None,
                 "max_favorable_atr_multiple": round(max_favorable_atr_multiple, 4)
                     if max_favorable_atr_multiple is not None else None,
                 "required_safety_capital": round(required_safety_capital, 1),
@@ -415,7 +476,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         if pos is not None:
             unreal = ((row["close"] - pos["entry_price"]) * pos["direction"]
                       * cost.point_value * cost.quantity)
-        equity_rows.append({"datetime": dt, "equity": realized + unreal})
+        equity_rows.append({
+            "datetime": dt,
+            "equity": realized + unreal,
+            "risk_cap_skipped_entries": risk_cap_skipped_entries,
+            "missing_atr_skipped_entries": missing_atr_skipped_entries,
+        })
 
     trades_df = pd.DataFrame(trades, columns=[
         "signal_date", "signal_bar_index",
@@ -426,7 +492,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "exit_reason", "entry_reason",
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
-        "entry_atr", "max_favorable_atr_multiple",
+        "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
+        "entry_risk_cap_amount", "max_favorable_atr_multiple",
         "required_safety_capital"])
     equity_df = pd.DataFrame(equity_rows)
     return trades_df, equity_df

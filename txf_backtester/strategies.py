@@ -80,7 +80,14 @@ class StrategyParams:
     macd_reverse_exclude_atr_multiple: float = 0.0
     use_macd_reverse: bool = True
     use_fixed_stop: bool = True
+    # v0.6.6：停損距離可使用固定點數或「進場前已完成 K 棒 ATR × 倍數」。
+    stop_threshold_mode: str = "points"  # points / entry_atr
     stop_points: float = 100.0
+    stop_atr_multiple: float = 0.75
+    # ATR 停損換算的正常價格風險若超過上限，直接略過該次進場。
+    # 僅限制預定停損距離，不保證跳空時的實際損失不超過上限。
+    use_entry_risk_cap: bool = False
+    max_entry_risk_amount: float = 20000.0
     use_take_profit: bool = False
     take_profit_points: float = 200.0
     use_trailing_stop: bool = False
@@ -116,7 +123,8 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_profit_scaled_macd_exclusion", "macd_reverse_exclude_profit_amount",
                "macd_reverse_exclude_atr_multiple",
                "use_macd_reverse",
-               "use_fixed_stop", "stop_points",
+               "use_fixed_stop", "stop_threshold_mode", "stop_points", "stop_atr_multiple",
+               "use_entry_risk_cap", "max_entry_risk_amount",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]
 

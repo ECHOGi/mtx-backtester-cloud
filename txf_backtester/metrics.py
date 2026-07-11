@@ -28,9 +28,18 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
                     market_data: pd.DataFrame = None) -> dict:
     """回傳 {指標名: 值}，全部為 python 原生型別，方便顯示與匯出。"""
     m = {}
+    risk_cap_skips = 0
+    missing_atr_skips = 0
+    if equity is not None and not equity.empty:
+        if "risk_cap_skipped_entries" in equity.columns:
+            risk_cap_skips = int(pd.to_numeric(equity["risk_cap_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
+        if "missing_atr_skipped_entries" in equity.columns:
+            missing_atr_skips = int(pd.to_numeric(equity["missing_atr_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
     if trades is None or trades.empty:
         return {
             "交易次數": 0,
+            "風險上限跳過進場次數": risk_cap_skips,
+            "ATR缺值跳過進場次數": missing_atr_skips,
             "是否曾發生斷頭": "否",
             "斷頭次數": 0,
             "第一次斷頭日期": "無",
@@ -62,6 +71,8 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
             else:
                 m["年化報酬率(%)"] = None  # 資金已虧損殆盡，無法年化
     m["交易次數"] = int(len(trades))
+    m["風險上限跳過進場次數"] = risk_cap_skips
+    m["ATR缺值跳過進場次數"] = missing_atr_skips
     m["獲利次數"] = int(len(wins))
     m["虧損次數"] = int(len(losses))
     m["勝率(%)"] = round(len(wins) / len(trades) * 100, 2)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-run_batch_backtest.py - 命令列批次回測入口（適用 v0.6.5）。
+run_batch_backtest.py - 命令列批次回測入口（適用 v0.6.6）。
 
 用途：
 - 不開 Streamlit 網頁。
@@ -88,6 +88,9 @@ TRADE_COL_ZH = {
     "max_favorable_points": "最大順向浮動點數",
     "max_favorable_amount": "最大順向浮動金額",
     "entry_atr": "進場可用ATR",
+    "planned_stop_points": "預定停損點數",
+    "planned_stop_risk_amount": "預定停損風險金額",
+    "entry_risk_cap_amount": "單筆風險上限",
     "max_favorable_atr_multiple": "最大順向浮盈ATR倍數",
     "required_safety_capital": "當筆最低所需安全資金",
 }
@@ -298,6 +301,8 @@ def compare_row(idx: int, name: str, metrics: dict) -> dict:
         "獲利因子": metrics.get("獲利因子", ""),
         "期望值(元/筆)": metrics.get("期望值(元/筆)", ""),
         "交易次數": metrics.get("交易次數", 0),
+        "風險上限跳過進場次數": metrics.get("風險上限跳過進場次數", 0),
+        "ATR缺值跳過進場次數": metrics.get("ATR缺值跳過進場次數", 0),
         "勝率(%)": metrics.get("勝率(%)", 0),
         "最大連續虧損(次)": metrics.get("最大連續虧損(次)", ""),
         "平均持倉K棒數": metrics.get("平均持倉K棒數", ""),
@@ -359,6 +364,7 @@ def single_strategy_md(batch: dict, result: dict) -> str:
         f"- 獲利因子：{m.get('獲利因子', '')}",
         f"- 期望值：{m.get('期望值(元/筆)', '')} 元/筆",
         f"- 交易次數：{m.get('交易次數', 0)} 筆",
+        f"- 風險上限跳過進場：{m.get('風險上限跳過進場次數', 0)} 次",
         f"- 勝率：{m.get('勝率(%)', 0)}%",
         f"- 是否曾發生斷頭：{m.get('是否曾發生斷頭', '否')}",
         f"- 斷頭次數：{m.get('斷頭次數', 0)} 次",
