@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.1｜安全修正版（精簡介面）。
+"""MTX 台指期回測平台 v0.8.2｜自動契約換算版（精簡介面）。
 
 所有操作集中在左側；中央只呈現回測結果。
 """
@@ -26,8 +26,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.1"
-APP_RELEASE_NAME = "安全修正版"
+APP_VERSION = "v0.8.2"
+APP_RELEASE_NAME = "自動契約換算版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -156,11 +156,16 @@ def _cfg_value(cfg: dict, key: str, default=None):
 def _position_basis_text(cfg: dict) -> str:
     mode = str(_cfg_value(cfg, "position_sizing_mode", "fixed"))
     compounding = bool(_cfg_value(cfg, "position_compounding", False))
+    mix = str(_cfg_value(cfg, "position_contract_mix_mode", "small_micro_only"))
+    if mix in {"min_contract_count", "min_contracts", "auto_min_contracts"}:
+        mix_text = "｜契約自動換算：大台→小台→微台，總口數最少"
+    else:
+        mix_text = ""
     if mode == "fixed":
-        return "固定口數（不複利）"
+        return "固定口數（不複利）" + mix_text
     if compounding:
-        return f"{mode}｜獲利與虧損皆隨權益複利增減口數"
-    return f"{mode}｜舊口徑：獲利不加口、虧損會減口"
+        return f"{mode}｜獲利與虧損皆隨權益複利增減口數{mix_text}"
+    return f"{mode}｜舊口徑：獲利不加口、虧損會減口{mix_text}"
 
 
 def _exit_override_table(cfg: dict) -> pd.DataFrame:
@@ -400,6 +405,7 @@ if run_clicked:
                 max_small_contracts=max_small,
                 position_compounding=position_compounding)
             exit_cfg = cfg.setdefault("exit", {})
+            exit_cfg["position_large_fee"] = float(SYMBOLS["TX"]["fee"])
             exit_cfg["position_small_fee"] = float(fee) if symbol == "MTX" else float(SYMBOLS["MTX"]["fee"])
             exit_cfg["position_micro_fee"] = float(fee) if symbol == "TMF" else float(SYMBOLS["TMF"]["fee"])
             final_items.append((name, cfg))
@@ -553,7 +559,7 @@ else:
             trade_columns = {
                 "entry_date": "進場時間", "exit_date": "出場時間", "direction": "方向",
                 "entry_price": "進場價", "exit_price": "出場價",
-                "small_quantity": "小台口數", "micro_quantity": "微台口數",
+                "large_quantity": "大台口數", "small_quantity": "小台口數", "micro_quantity": "微台口數",
                 "position_action": "口數變化", "position_compounding": "複利啟用",
                 "position_equity_basis": "部位權益口徑", "available_equity_at_entry": "進場前部位計算權益",
                 "effective_leverage": "有效槓桿", "margin_utilization_pct": "保證金占用率(%)",

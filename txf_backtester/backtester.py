@@ -219,6 +219,7 @@ def _fixed_position_spec(cost: CostModel, p) -> dict:
         maintenance = margin * 0.77
     return {
         "micro_units": int(round(total_point_value / max(_positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0, 1e-9))),
+        "large_qty": 0,
         "small_qty": int(small_qty),
         "micro_qty": int(micro_qty),
         "small_equivalent_quantity": total_point_value / small_point_value,
@@ -234,30 +235,59 @@ def _fixed_position_spec(cost: CostModel, p) -> dict:
 
 
 def _contract_mix_from_micro_units(units: int, p, cost: CostModel | None = None) -> dict:
+    """把微台等值曝險轉為實際契約組合。
+
+    v0.8.2 ``min_contract_count`` 模式依序使用大台、小台、微台，
+    在不改變總點值曝險的前提下最小化總口數。預設仍保留舊版
+    ``small_micro_only``，避免舊策略未宣告時改變成本口徑。
+    """
     units = max(int(units), 0)
     micro_pv = _positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0
     small_pv = _positive_float(getattr(p, "position_small_point_value", 50.0)) or 50.0
-    ratio = max(int(round(small_pv / micro_pv)), 1)
-    small_qty = units // ratio
-    micro_qty = units % ratio
-    total_point_value = small_qty * small_pv + micro_qty * micro_pv
+    large_pv = _positive_float(getattr(p, "position_large_point_value", 200.0)) or 200.0
+    small_ratio = max(int(round(small_pv / micro_pv)), 1)
+    large_ratio = max(int(round(large_pv / micro_pv)), 1)
+    mode = str(getattr(p, "position_contract_mix_mode", "small_micro_only") or "small_micro_only").lower()
+    max_contract_pv = (_positive_float(getattr(p, "position_max_contract_point_value", large_pv))
+                       or large_pv)
+
+    large_qty = 0
+    remaining = units
+    if mode in {"min_contract_count", "min_contracts", "auto_min_contracts"}:
+        if max_contract_pv + 1e-9 >= large_pv:
+            large_qty = remaining // large_ratio
+            remaining %= large_ratio
+        small_qty = remaining // small_ratio if max_contract_pv + 1e-9 >= small_pv else 0
+        remaining -= small_qty * small_ratio
+        micro_qty = remaining
+    else:
+        small_qty = remaining // small_ratio
+        micro_qty = remaining % small_ratio
+
+    total_point_value = large_qty * large_pv + small_qty * small_pv + micro_qty * micro_pv
+    large_margin = _positive_float(getattr(p, "position_large_margin", 636000.0)) or 636000.0
     small_margin = _positive_float(getattr(p, "position_small_margin", 159000.0)) or 159000.0
     micro_margin = _positive_float(getattr(p, "position_micro_margin", 32000.0)) or 32000.0
+    large_maint = _positive_float(getattr(p, "position_large_maintenance_margin", 488000.0)) or 488000.0
     small_maint = _positive_float(getattr(p, "position_small_maintenance_margin", 122000.0)) or 122000.0
     micro_maint = _positive_float(getattr(p, "position_micro_maintenance_margin", 24400.0)) or 24400.0
+    large_fee = max(float(getattr(p, "position_large_fee", 50.0) or 0.0), 0.0)
     small_fee = max(float(getattr(p, "position_small_fee", 20.0) or 0.0), 0.0)
     micro_fee = max(float(getattr(p, "position_micro_fee", 12.0) or 0.0), 0.0)
     return {
         "micro_units": units,
-        "small_qty": small_qty,
-        "micro_qty": micro_qty,
+        "large_qty": int(large_qty),
+        "small_qty": int(small_qty),
+        "micro_qty": int(micro_qty),
         "small_equivalent_quantity": total_point_value / small_pv if small_pv else 0.0,
         "point_value_total": total_point_value,
-        "fee_per_side_total": small_qty * small_fee + micro_qty * micro_fee,
-        "margin_amount": small_qty * small_margin + micro_qty * micro_margin,
-        "maintenance_margin_amount": small_qty * small_maint + micro_qty * micro_maint,
+        "fee_per_side_total": large_qty * large_fee + small_qty * small_fee + micro_qty * micro_fee,
+        "margin_amount": large_qty * large_margin + small_qty * small_margin + micro_qty * micro_margin,
+        "maintenance_margin_amount": large_qty * large_maint + small_qty * small_maint + micro_qty * micro_maint,
         "position_equity_basis": "fixed",
         "position_compounding": False,
+        "position_contract_mix_mode": mode,
+        "position_max_contract_point_value": max_contract_pv,
     }
 
 
@@ -366,10 +396,13 @@ def _safe_capital_position_spec(stop_distance_points, p, realized: float = 0.0, 
     small_pv = _positive_float(getattr(p, "position_small_point_value", 50.0)) or 50.0
     micro_pv = _positive_float(getattr(p, "position_micro_point_value", 10.0)) or 10.0
     ratio = max(int(round(small_pv / micro_pv)), 1)
+    # v0.8.2：明確設為0代表不使用人為曝險上限，實際口數只受安全資金、
+    # 保證金、停損、跳空與回撤準備限制。正整數才視為上限。
+    units = raw_units
+    if max_units > 0:
+        units = min(units, max_units)
     if max_small > 0:
-        cap_from_small = max_small * ratio
-        max_units = min(max_units, cap_from_small) if max_units > 0 else cap_from_small
-    units = min(raw_units, max_units)
+        units = min(units, max_small * ratio)
     distance = _positive_float(stop_distance_points)
     stress_multiple = _positive_float(getattr(p, "position_stress_multiple", 4.0)) or 4.0
     gap_points = max(float(getattr(p, "position_gap_stress_points", 0.0) or 0.0), 0.0)
@@ -760,6 +793,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "entry_price": round(pos["entry_price"], 2),
                 "exit_price": round(px, 2),
                 "quantity": round(float(pos.get("small_equivalent_quantity", 1.0)), 2),
+                "large_quantity": int(pos.get("large_qty", 0)),
                 "small_quantity": int(pos.get("small_qty", 0)),
                 "micro_quantity": int(pos.get("micro_qty", 0)),
                 "position_micro_units": int(pos.get("micro_units", 0)),
@@ -878,7 +912,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "entry_date", "entry_execution_date", "entry_bar_index",
         "exit_date", "exit_bar_index", "direction",
         "entry_price", "exit_price", "quantity",
-        "small_quantity", "micro_quantity", "position_micro_units",
+        "large_quantity", "small_quantity", "micro_quantity", "position_micro_units",
         "point_value_total", "position_margin_amount", "maintenance_margin_amount",
         "position_sizing_mode", "position_compounding", "position_equity_basis",
         "position_regime", "requested_micro_units",

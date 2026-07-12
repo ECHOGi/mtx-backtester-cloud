@@ -328,10 +328,12 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
             f"actual={t['pnl_points']}, expected={expected_pts}")
         point_value_total = float(t.get("point_value_total", float(cost.point_value) * int(cost.quantity)))
         if "small_quantity" in t and "micro_quantity" in t:
+            large_qty = int(t.get("large_quantity", 0) or 0)
             small_qty = int(t.get("small_quantity", 0) or 0)
             micro_qty = int(t.get("micro_quantity", 0) or 0)
-            if str(t.get("position_sizing_mode", "fixed")) in {"dynamic_risk", "core_regime"}:
-                fee_per_side = (small_qty * float(getattr(p, "position_small_fee", 20.0))
+            if str(t.get("position_sizing_mode", "fixed")) != "fixed":
+                fee_per_side = (large_qty * float(getattr(p, "position_large_fee", 50.0))
+                                + small_qty * float(getattr(p, "position_small_fee", 20.0))
                                 + micro_qty * float(getattr(p, "position_micro_fee", 12.0)))
             else:
                 fee_per_side = float(cost.fee) * int(cost.quantity)

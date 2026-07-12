@@ -99,12 +99,21 @@ class StrategyParams:
     position_use_stress_capital_check: bool = True
     position_micro_point_value: float = 10.0
     position_small_point_value: float = 50.0
+    position_large_point_value: float = 200.0
     position_micro_margin: float = 32000.0
     position_small_margin: float = 159000.0
+    position_large_margin: float = 636000.0
     position_micro_maintenance_margin: float = 24400.0
     position_small_maintenance_margin: float = 122000.0
+    position_large_maintenance_margin: float = 488000.0
     position_micro_fee: float = 12.0
     position_small_fee: float = 20.0
+    position_large_fee: float = 50.0
+    # v0.8.2：執行商品自動換算。min_contract_count 會以大台→小台→微台
+    # 由大到小組合相同曝險，盡量減少總口數；可用 max_contract_point_value
+    # 限制高風險進場只能使用小台或微台。
+    position_contract_mix_mode: str = "small_micro_only"
+    position_max_contract_point_value: float = 200.0
     # v0.8.0：真正依帳戶權益複利的「安全資金單位」部位。
     # 每累積一個安全資金單位才增加一個微台等值單位，獲利可增倉、回撤會減倉。
     position_sizing_mode: str = "fixed"  # fixed / dynamic_risk / dynamic_safe_capital / dynamic_safe_capital_capped
@@ -177,10 +186,12 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "position_sizing_capital",
                "position_risk_fraction", "position_stress_multiple",
                "position_max_micro_units", "position_use_stress_capital_check",
-               "position_micro_point_value", "position_small_point_value",
-               "position_micro_margin", "position_small_margin",
+               "position_micro_point_value", "position_small_point_value", "position_large_point_value",
+               "position_micro_margin", "position_small_margin", "position_large_margin",
                "position_micro_maintenance_margin", "position_small_maintenance_margin",
-               "position_micro_fee", "position_small_fee",
+               "position_large_maintenance_margin",
+               "position_micro_fee", "position_small_fee", "position_large_fee",
+               "position_contract_mix_mode", "position_max_contract_point_value",
                "position_sizing_mode", "position_compounding", "use_safe_capital_position_sizing",
                "position_safe_capital_per_micro_unit", "position_min_cash_buffer",
                "position_drawdown_reserve_fraction", "position_gap_stress_points",
