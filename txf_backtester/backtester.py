@@ -157,6 +157,32 @@ def _sizing_available_equity(p, realized: float = 0.0) -> tuple[float, str]:
     return min(capital, actual_equity), "legacy_no_profit_compounding"
 
 
+def _drawdown_risk_brake_multiplier(p, realized: float = 0.0,
+                                        realized_peak_equity: float | None = None) -> tuple[float, float, float]:
+    """v0.8.4 已實現權益回撤煞車。
+
+    回傳 (風險乘數, 已實現權益回撤百分比, 已實現權益前高)。
+    只影響 dynamic_risk 的新進場部位，不會在持倉中途偷偷改口數。
+    """
+    capital = _positive_float(getattr(p, "position_sizing_capital", None)) or 0.0
+    current_equity = max(float(capital) + float(realized), 0.0)
+    peak = max(float(realized_peak_equity or current_equity), current_equity, 1e-9)
+    drawdown_pct = max((peak - current_equity) / peak * 100.0, 0.0)
+    if not bool(getattr(p, "use_drawdown_risk_brake", False)):
+        return 1.0, drawdown_pct, peak
+    start = max(float(getattr(p, "position_drawdown_brake_start_pct", 0.0) or 0.0), 0.0)
+    full = max(float(getattr(p, "position_drawdown_brake_full_pct", start) or start), start)
+    floor = min(max(float(getattr(p, "position_drawdown_brake_floor", 1.0) or 1.0), 0.0), 1.0)
+    if drawdown_pct <= start or full <= start:
+        multiplier = 1.0 if drawdown_pct <= start else floor
+    elif drawdown_pct >= full:
+        multiplier = floor
+    else:
+        progress = (drawdown_pct - start) / (full - start)
+        multiplier = 1.0 - progress * (1.0 - floor)
+    return max(float(multiplier), 0.0), drawdown_pct, peak
+
+
 def _stop_threshold_mode(p) -> str:
     mode = str(getattr(p, "stop_threshold_mode", "points") or "points").lower()
     return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "points"
@@ -291,7 +317,10 @@ def _contract_mix_from_micro_units(units: int, p, cost: CostModel | None = None)
     }
 
 
-def _dynamic_position_spec(stop_distance_points, p, realized: float = 0.0, cost: CostModel | None = None) -> dict | None:
+def _dynamic_position_spec(stop_distance_points, p, realized: float = 0.0,
+                           cost: CostModel | None = None,
+                           realized_peak_equity: float | None = None) -> dict | None:
+    """依停損距離與權益風險率決定部位，支援已實現權益回撤煞車。"""
     distance = _positive_float(stop_distance_points)
     capital = _positive_float(getattr(p, "position_sizing_capital", None))
     risk_fraction = _positive_float(getattr(p, "position_risk_fraction", None))
@@ -301,34 +330,59 @@ def _dynamic_position_spec(stop_distance_points, p, realized: float = 0.0, cost:
     available_equity, equity_basis = _sizing_available_equity(p, realized)
     if available_equity <= 0:
         return None
-    risk_budget = available_equity * risk_fraction
+    brake_multiplier, realized_dd_pct, realized_peak = _drawdown_risk_brake_multiplier(
+        p, realized, realized_peak_equity)
+    effective_risk_fraction = risk_fraction * brake_multiplier
+    risk_budget = available_equity * effective_risk_fraction
     per_unit_risk = distance * micro_pv
-    if per_unit_risk <= 0:
+    if per_unit_risk <= 0 or risk_budget <= 0:
         return None
     raw_units = int(risk_budget // per_unit_risk)
     max_units = max(int(getattr(p, "position_max_micro_units", 10) or 0), 0)
-    units = min(raw_units, max_units)
+    # 0代表不設人為口數上限；實際曝險仍受風險預算、保證金與壓力檢查限制。
+    units = min(raw_units, max_units) if max_units > 0 else raw_units
+    if units <= 0:
+        return None
     stress_multiple = _positive_float(getattr(p, "position_stress_multiple", 4.0)) or 4.0
     use_stress = bool(getattr(p, "position_use_stress_capital_check", True))
-    while units > 0:
-        spec = _contract_mix_from_micro_units(units, p, cost)
+
+    def candidate(unit_count: int):
+        spec = _contract_mix_from_micro_units(unit_count, p, cost)
         normal_risk = distance * float(spec["point_value_total"])
         stress_risk = normal_risk * stress_multiple
-        # 保證金不是成本，但必須留在帳戶內作為抵押；壓力損失後仍需撐得住。
-        if (not use_stress) or (float(spec["margin_amount"]) + stress_risk <= available_equity):
-            spec.update({
-                "risk_budget_amount": risk_budget,
-                "planned_stop_risk_amount": normal_risk,
-                "stress_risk_amount": stress_risk,
-                "stress_multiple": stress_multiple,
-                "available_equity_at_entry": available_equity,
-                "position_equity_basis": equity_basis,
-                "position_compounding": bool(getattr(p, "position_compounding", False)),
-                "position_sizing_mode": "dynamic_risk",
-            })
-            return spec
-        units -= 1
-    return None
+        required = float(spec["margin_amount"]) + (stress_risk if use_stress else 0.0)
+        return spec, normal_risk, stress_risk, required
+
+    # 保證金與風險隨曝險單調增加，二分搜尋最大可行部位。
+    lo, hi, best = 1, int(units), None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        spec, normal_risk, stress_risk, required = candidate(mid)
+        if required <= available_equity:
+            best = (mid, spec, normal_risk, stress_risk)
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        return None
+    unit_count, spec, normal_risk, stress_risk = best
+    spec.update({
+        "risk_budget_amount": risk_budget,
+        "base_risk_fraction": risk_fraction,
+        "effective_risk_fraction": effective_risk_fraction,
+        "drawdown_brake_multiplier": brake_multiplier,
+        "realized_equity_drawdown_pct": realized_dd_pct,
+        "realized_equity_peak": realized_peak,
+        "planned_stop_risk_amount": normal_risk,
+        "stress_risk_amount": stress_risk,
+        "stress_multiple": stress_multiple,
+        "available_equity_at_entry": available_equity,
+        "position_equity_basis": equity_basis,
+        "position_compounding": bool(getattr(p, "position_compounding", False)),
+        "position_sizing_mode": "dynamic_risk",
+        "requested_micro_units": int(raw_units),
+    })
+    return spec
 
 
 def _regime_position_spec(target_units, stop_distance_points, p, realized: float = 0.0, cost: CostModel | None = None) -> dict | None:
@@ -530,6 +584,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     pos = None        # 目前持倉 dict
     pending = None    # 前一根收盤產生、等待下一根開盤執行的訊號 dict
     realized = 0.0    # 已實現累積損益（元）
+    initial_sizing_capital = float(getattr(p, "position_sizing_capital", 0.0) or 0.0)
+    realized_peak_equity = max(initial_sizing_capital, 0.0)
     risk_cap_skipped_entries = 0
     missing_atr_skipped_entries = 0
     dynamic_size_skipped_entries = 0
@@ -570,7 +626,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     dynamic_size_skipped_entries += 1
                     skip_entry = True
             elif getattr(entry_p, "use_dynamic_position_sizing", False):
-                position_spec = None if skip_entry else _dynamic_position_spec(planned_stop_points, entry_p, realized, cost)
+                position_spec = None if skip_entry else _dynamic_position_spec(
+                    planned_stop_points, entry_p, realized, cost, realized_peak_equity)
                 if not skip_entry and position_spec is None:
                     dynamic_size_skipped_entries += 1
                     skip_entry = True
@@ -852,11 +909,22 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     if _positive_float(pos.get("stress_multiple")) else None,
                 "available_equity_at_entry": round(float(pos.get("available_equity_at_entry")), 1)
                     if _positive_float(pos.get("available_equity_at_entry")) else None,
+                "base_risk_fraction": round(float(pos.get("base_risk_fraction")), 6)
+                    if _positive_float(pos.get("base_risk_fraction")) else None,
+                "effective_risk_fraction": round(float(pos.get("effective_risk_fraction")), 6)
+                    if _positive_float(pos.get("effective_risk_fraction")) else None,
+                "drawdown_brake_multiplier": round(float(pos.get("drawdown_brake_multiplier")), 4)
+                    if pos.get("drawdown_brake_multiplier") is not None else None,
+                "realized_equity_drawdown_pct": round(float(pos.get("realized_equity_drawdown_pct")), 4)
+                    if pos.get("realized_equity_drawdown_pct") is not None else None,
+                "realized_equity_peak": round(float(pos.get("realized_equity_peak")), 1)
+                    if pos.get("realized_equity_peak") is not None else None,
                 "max_favorable_atr_multiple": round(max_favorable_atr_multiple, 4)
                     if max_favorable_atr_multiple is not None else None,
                 "required_safety_capital": round(required_safety_capital, 1),
             })
             realized += amount
+            realized_peak_equity = max(realized_peak_equity, initial_sizing_capital + realized)
             if exit_reason == "margin_call" and bool(getattr(active_p, "stop_trading_after_margin_call", True)):
                 account_disabled = True
                 pending = None
@@ -938,7 +1006,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
         "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
-        "entry_risk_cap_amount", "risk_budget_amount", "stress_risk_amount",
+        "entry_risk_cap_amount", "risk_budget_amount", "base_risk_fraction",
+        "effective_risk_fraction", "drawdown_brake_multiplier",
+        "realized_equity_drawdown_pct", "realized_equity_peak", "stress_risk_amount",
         "stress_multiple", "available_equity_at_entry",
         "max_favorable_atr_multiple",
         "required_safety_capital"])

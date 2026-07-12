@@ -142,6 +142,16 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
         m["動態加口次數"] = int((acts == "increase").sum())
         m["動態減口次數"] = int((acts == "decrease").sum())
         m["動態維持口數次數"] = int((acts == "maintain").sum())
+    if "drawdown_brake_multiplier" in trades.columns:
+        brake = pd.to_numeric(trades["drawdown_brake_multiplier"], errors="coerce").dropna()
+        if len(brake):
+            m["最低回撤煞車倍率"] = round(float(brake.min()), 4)
+            m["平均回撤煞車倍率"] = round(float(brake.mean()), 4)
+            m["回撤煞車啟動交易數"] = int((brake < 0.999999).sum())
+    if "realized_equity_drawdown_pct" in trades.columns:
+        rdd = pd.to_numeric(trades["realized_equity_drawdown_pct"], errors="coerce").dropna()
+        if len(rdd):
+            m["進場時最大已實現權益回撤(%)"] = round(float(rdd.max()), 2)
 
     # v0.6.3：獲利保留與浮盈轉虧。
     # 加權保留率 = 獲利交易實現點數合計 / 同批獲利交易最大順向浮盈點數合計。

@@ -134,6 +134,12 @@ class StrategyParams:
     position_addon_micro_units: int = 5
     position_defensive_micro_units: int = 0
     position_allow_downsize: bool = True
+    # v0.8.4：動態風險部位可依「已實現權益」自前高的回撤線性降風險。
+    # start_pct 前維持原風險；full_pct 時降至 floor 倍，之後不再降低。
+    use_drawdown_risk_brake: bool = False
+    position_drawdown_brake_start_pct: float = 4.0
+    position_drawdown_brake_full_pct: float = 10.0
+    position_drawdown_brake_floor: float = 0.4
     # v0.7.0：長期持有控制。固定停損與斷頭不受最短持有期限制。
     minimum_holding_bars: int = 0
     chandelier_exit_confirmation_bars: int = 1
@@ -199,6 +205,8 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_regime_position_sizing",
                "position_core_micro_units", "position_addon_micro_units",
                "position_defensive_micro_units", "position_allow_downsize",
+               "use_drawdown_risk_brake", "position_drawdown_brake_start_pct",
+               "position_drawdown_brake_full_pct", "position_drawdown_brake_floor",
                "minimum_holding_bars",
                "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
                "signal_exit_confirmation_bars",

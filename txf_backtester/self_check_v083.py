@@ -106,7 +106,7 @@ def main():
     passed.append("six_states_valid_and_reproducible")
 
     app_text = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
-    for text in ("盤中模擬情境數", "期末強制平倉損益", "超越正二路徑比例", "help="):
+    for text in ("盤中模擬情境數", "期末強制平倉損益", "期末總權益超越正二比例", "help="):
         assert text in app_text, text
     passed.append("ui_help_and_result_explanations_present")
 

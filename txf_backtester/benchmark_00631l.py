@@ -117,7 +117,7 @@ def download_twse_history(start, end, timeout: float = 20.0,
                           session: requests.Session | None = None) -> pd.DataFrame:
     """逐月下載00631L官方日行情。網路失敗時拋出可讀錯誤。"""
     sess = session or requests.Session()
-    sess.headers.update({"User-Agent": "Mozilla/5.0 MTX-Backtester/0.8.3"})
+    sess.headers.update({"User-Agent": "Mozilla/5.0 MTX-Backtester/0.8.4"})
     frames = []
     errors = []
     for month in _month_starts(start, end):

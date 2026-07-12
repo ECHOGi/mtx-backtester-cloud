@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.3｜未來情境、正二基準與說明版。
+"""MTX 台指期回測平台 v0.8.4｜期末總權益正二對照與NX回撤煞車版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -29,8 +29,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.3"
-APP_RELEASE_NAME = "未來情境＋正二基準＋說明版"
+APP_VERSION = "v0.8.4"
+APP_RELEASE_NAME = "期末總權益正二對照＋NX回撤煞車版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -199,11 +199,17 @@ def _position_basis_text(cfg: dict) -> str:
         mix_text = "｜契約自動換算：大台→小台→微台，總口數最少"
     else:
         mix_text = ""
+    brake_text = ""
+    if mode == "dynamic_risk" and bool(_cfg_value(cfg, "use_drawdown_risk_brake", False)):
+        start = float(_cfg_value(cfg, "position_drawdown_brake_start_pct", 0.0) or 0.0)
+        full = float(_cfg_value(cfg, "position_drawdown_brake_full_pct", 0.0) or 0.0)
+        floor = float(_cfg_value(cfg, "position_drawdown_brake_floor", 1.0) or 1.0)
+        brake_text = f"｜已實現權益回撤{start:g}%啟動煞車，{full:g}%降至{floor:.0%}風險"
     if mode == "fixed":
         return "固定口數（不複利）" + mix_text
     if compounding:
-        return f"{mode}｜獲利與虧損皆隨權益複利增減口數{mix_text}"
-    return f"{mode}｜舊口徑：獲利不加口、虧損會減口{mix_text}"
+        return f"{mode}｜獲利與虧損皆隨權益複利增減口數{brake_text}{mix_text}"
+    return f"{mode}｜舊口徑：獲利不加口、虧損會減口{brake_text}{mix_text}"
 
 
 def _exit_override_table(cfg: dict) -> pd.DataFrame:
@@ -269,6 +275,9 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
             readme += ["", "## 多截止日未來情境",
                        f"- 截止日：{', '.join(scenario.get('cutoff_dates', []))}",
                        f"- 未來延伸：{scenario.get('future_days', '—')}個交易日",
+                       f"- 每種情境路徑數：{result.get('run_settings', {}).get('scenario_paths_per_state', '—')}",
+                       f"- 正式排名口徑：{scenario.get('ranking_basis', '共同路徑期末總權益')}",
+                       "- 未自然出場只表示模擬終點仍有持倉，不作為必須消除的錯誤。",
                        f"- 情境：{', '.join(scenario.get('scenario_states', []))}"]
         readme += ["", "## 各策略部位／複利口徑"]
         for name, rep in result["representatives"].items():
@@ -482,8 +491,8 @@ with st.sidebar:
                 format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
                 help="每個截止日都會重新建立當時可見的歷史，再接上六種共同未來日K情境；不是事後只扣除最後一筆浮盈。")
             future_paths_per_state = st.select_slider(
-                "每種未來狀態路徑數", options=[1, 2, 3, 5], value=1,
-                help="六種未來狀態各產生相同數量的路徑。三個策略與正二共用相同來源日期與seed。")
+                "每種未來狀態路徑數", options=[1, 2, 3, 5, 10, 15, 20], value=5,
+                help="六種未來狀態各產生相同數量的路徑。所有策略與正二共用相同來源日期與seed；正式壓力測試最多可選20條。")
         else:
             selected_cutoffs, future_paths_per_state = [], 0
         data_error = ""
@@ -557,10 +566,23 @@ if run_clicked:
                 benchmark_part, float(initial_capital), float(benchmark_fee_rate))
             result["benchmark_metrics"] = benchmark_metrics(benchmark_curve, float(initial_capital))
             bm_annual = float(result["benchmark_metrics"].get("年化報酬率(%)", 0.0))
-            result["comparison"]["相對正二年化差(百分點)"] = (
-                pd.to_numeric(result["comparison"]["年化報酬率中位數(%)"], errors="coerce") - bm_annual
-            ).round(2)
-            result["comparison"]["歷史年化超越正二"] = result["comparison"]["相對正二年化差(百分點)"] > 0
+            bm_end = float(result["benchmark_metrics"].get("期末資產(元)", initial_capital))
+            bm_dd = float(result["benchmark_metrics"].get("最大回撤率(%)", 0.0))
+            compare = result["comparison"]
+            compare["策略期末總權益(元)"] = (
+                float(initial_capital) + pd.to_numeric(compare["總損益中位數"], errors="coerce")
+            ).round(0)
+            compare["正二期末資產(元)"] = round(bm_end, 0)
+            compare["期末資產差(元)"] = (compare["策略期末總權益(元)"] - bm_end).round(0)
+            compare["策略年化報酬率(%)"] = pd.to_numeric(compare["年化報酬率中位數(%)"], errors="coerce").round(2)
+            compare["正二年化報酬率(%)"] = round(bm_annual, 2)
+            compare["相對正二年化差(百分點)"] = (compare["策略年化報酬率(%)"] - bm_annual).round(2)
+            compare["策略最大回撤率(%)"] = pd.to_numeric(compare["最大回撤率中位數(%)"], errors="coerce").round(2)
+            compare["正二最大回撤率(%)"] = round(bm_dd, 2)
+            compare["相對正二回撤改善(百分點)"] = (compare["策略最大回撤率(%)"] - bm_dd).round(2)
+            compare["歷史期末總權益超越正二"] = compare["策略期末總權益(元)"] > bm_end
+            compare["歷史年化超越正二"] = compare["相對正二年化差(百分點)"] > 0
+            result["comparison"] = compare
             result["benchmark_data"] = benchmark_df
             result["benchmark_curve"] = benchmark_curve
             result["benchmark_info"] = benchmark_info.__dict__ if benchmark_info else {}
@@ -595,7 +617,7 @@ if run_clicked:
         zip_bytes = _result_zip(batch_name, raw_json, result)
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         zip_name = f"MTX_模擬回測_{stamp}_{_safe_name(batch_name)}.zip"
-        st.session_state["v083_result"] = {
+        st.session_state["v084_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
             "start": str(start_date), "end": str(end_date),
@@ -608,14 +630,14 @@ if run_clicked:
                 uploaded_info = upload_zip_result_to_drive(
                     auth_config=auth, parent_folder_id=parent,
                     result_folder_name=Path(zip_name).stem, zip_name=zip_name, zip_bytes=zip_bytes)
-                st.session_state["v083_result"]["drive_url"] = uploaded_info.get("folder_url", "")
+                st.session_state["v084_result"]["drive_url"] = uploaded_info.get("folder_url", "")
             except Exception as e:
-                st.session_state["v083_result"]["upload_error"] = str(e)
+                st.session_state["v084_result"]["upload_error"] = str(e)
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"回測失敗：{e}")
 
-state = st.session_state.get("v083_result")
+state = st.session_state.get("v084_result")
 st.markdown('''<div class="hero"><div class="eyebrow">FUTURES STRATEGY RESEARCH</div>
 <div class="title">台指期安全約束動態複利回測</div>
 <div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜大／小／微台自動最少口數｜斷頭檢查</div></div>''', unsafe_allow_html=True)
@@ -624,9 +646,11 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
     st.markdown("""
 **標準回測**呈現實際歷史期間結果；若全部只用完整日K，只有一個確定結果，所以不顯示P25、P10與箱型分布。
 
-**期末強制平倉損益**是回測最後一天仍未自然出場的部位，平台為結算而假設平倉的損益。正式判斷應同時看「扣除期末強平後損益」。
+**期末強制平倉損益**代表模擬終點仍持有的部位。未來本來就沒有真正終點，因此它不再被視為必須消除的問題；正式主排名改用同一終點的「策略期末總權益」直接比較「00631L期末市值」。
 
-**多截止日＋未來情境**會在多個歷史截止日後接上六種由歷史資料抽樣的未來日K。排名優先看：超越正二路徑比例、已實現年化中位數、P10、斷頭率與尚未自然出場比例。
+**多截止日＋未來情境**會在多個歷史截止日後接上六種由歷史資料抽樣的未來日K。正式排名先看期末總權益超越正二的比例，再看相對正二年化差與悲觀路徑P10。尚未自然出場比例只作為持倉特性說明。
+
+**正二相對欄位**會把策略與00631L的期末資產、年化報酬、最大回撤與差值並排顯示。回撤改善為正值，代表策略回撤比正二小。
 
 **00631L正二**使用實際價格與整數股數買進持有；2026年1拆22依事件調整股數與報酬，停牌缺值不當成價格為0。
 """)
@@ -636,6 +660,7 @@ if not state:
 else:
     result = state["result"]
     compare = result["comparison"]
+    scenario = result.get("scenario_analysis") or {}
     deterministic = bool(result.get("deterministic_1d_fast_mode"))
     best = compare.iloc[0] if not compare.empty else None
     st.caption(f"{state['batch_name']}｜{state['start']}～{state['end']}｜實際{state['effective_paths']}條盤中路徑（原設定{state['requested_paths']}）")
@@ -673,9 +698,22 @@ else:
         if source_text:
             st.caption(f"資料來源：{source_text}｜{info.get('start', '')}～{info.get('end', '')}｜{info.get('rows', 0):,}筆")
 
+    if isinstance(scenario.get("comparison"), pd.DataFrame) and not scenario["comparison"].empty:
+        formal_best = scenario["comparison"].iloc[0]
+        st.markdown(f'<div class="best-banner">正式主排名第一：{formal_best["策略名稱"]}</div>', unsafe_allow_html=True)
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
+        f1.metric("超越正二比例", f"{float(formal_best.get('期末總權益超越正二比例(%)', 0)):.1f}%",
+                  help="在共同截止日、未來狀態與seed中，策略期末總權益高於同一路徑00631L期末市值的比例。")
+        f2.metric("策略期末權益中位數", f"{float(formal_best.get('策略期末總權益中位數', 0)):,.0f}")
+        f3.metric("正二期末資產中位數", f"{float(formal_best.get('正二期末資產中位數', 0)):,.0f}")
+        f4.metric("期末資產差中位數", f"{float(formal_best.get('期末資產差中位數', 0)):,.0f}")
+        f5.metric("年化：策略／正二", f"{float(formal_best.get('策略總權益年化中位數(%)', 0)):.2f}%／{float(formal_best.get('正二年化中位數(%)', 0)):.2f}%")
+        f6.metric("回撤：策略／正二", f"{float(formal_best.get('策略最大回撤率中位數(%)', 0)):.2f}%／{float(formal_best.get('正二最大回撤率中位數(%)', 0)):.2f}%")
+        st.caption("正式主排名採共同路徑期末總權益比較；未自然出場比例只說明策略在模擬終點是否仍持倉。")
+
     if best is not None:
         label_suffix = "" if deterministic else "中位數"
-        st.markdown(f'<div class="best-banner">歷史回測排序第一：{best["策略名稱"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="best-banner">單一歷史路徑排序第一：{best["策略名稱"]}</div>', unsafe_allow_html=True)
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric(f"年化報酬率{label_suffix}", f"{float(best.get('年化報酬率中位數(%)', 0)):.2f}%",
                   help="以初始資金與期末帳戶價值換算的複合年化報酬率；包含期末尚未自然出場部位。")
@@ -688,29 +726,34 @@ else:
         c5.metric("最大有效槓桿", f"{float(best.get('最大有效槓桿中位數(倍)', 0) or 0):.2f}倍",
                   help="進場時名目曝險相對帳戶可用權益的最高倍數。")
 
-    st.subheader("歷史回測策略比較")
+    st.subheader("單一歷史路徑策略比較")
     if deterministic:
         compare_cols = [c for c in [
-            "策略名稱", "報酬回撤比中位數", "總損益中位數",
-            "扣除期末強制平倉後損益中位數", "最大回撤中位數",
-            "最大回撤率中位數(%)", "年化報酬率中位數(%)", "相對正二年化差(百分點)", "歷史年化超越正二",
-            "最大有效槓桿中位數(倍)", "獲利因子中位數", "交易次數中位數",
-            "期末強制平倉損益中位數", "歷史最低運作資金中位數", "斷頭路徑數"
+            "策略名稱", "策略期末總權益(元)", "正二期末資產(元)", "期末資產差(元)",
+            "策略年化報酬率(%)", "正二年化報酬率(%)", "相對正二年化差(百分點)",
+            "策略最大回撤率(%)", "正二最大回撤率(%)", "相對正二回撤改善(百分點)",
+            "歷史期末總權益超越正二", "總損益中位數", "扣除期末強制平倉後損益中位數",
+            "期末強制平倉損益中位數", "最大有效槓桿中位數(倍)", "斷頭路徑數"
         ] if c in compare.columns]
     else:
         compare_cols = [c for c in [
-            "策略名稱", "報酬回撤比中位數", "總損益中位數", "總損益P25", "總損益P10",
-            "扣除期末強制平倉後損益中位數", "最大回撤中位數", "最大回撤率中位數(%)",
-            "年化報酬率中位數(%)", "相對正二年化差(百分點)", "歷史年化超越正二", "獲利路徑比例(%)", "最大有效槓桿中位數(倍)",
-            "獲利因子中位數", "交易次數中位數", "期末強制平倉損益中位數",
-            "歷史最低運作資金中位數", "斷頭路徑數"
+            "策略名稱", "策略期末總權益(元)", "正二期末資產(元)", "期末資產差(元)",
+            "策略年化報酬率(%)", "正二年化報酬率(%)", "相對正二年化差(百分點)",
+            "策略最大回撤率(%)", "正二最大回撤率(%)", "相對正二回撤改善(百分點)",
+            "歷史期末總權益超越正二", "總損益中位數", "總損益P25", "總損益P10",
+            "扣除期末強制平倉後損益中位數", "期末強制平倉損益中位數",
+            "最大有效槓桿中位數(倍)", "斷頭路徑數"
         ] if c in compare.columns]
     compare_view = compare[compare_cols].copy()
     rename_single = {
         "報酬回撤比中位數": "報酬回撤比", "總損益中位數": "總損益",
-        "扣除期末強制平倉後損益中位數": "扣除期末強平後損益",
+        "扣除期末強制平倉後損益中位數": "已實現損益",
         "最大回撤中位數": "最大回撤", "最大回撤率中位數(%)": "最大回撤率(%)",
-        "年化報酬率中位數(%)": "年化報酬率(%)", "相對正二年化差(百分點)": "相對正二年化差(百分點)",
+        "年化報酬率中位數(%)": "年化報酬率(%)", "相對正二年化差(百分點)": "年化差(百分點)",
+        "策略期末總權益(元)": "策略期末權益", "正二期末資產(元)": "正二期末資產",
+        "期末資產差(元)": "期末資產差", "策略年化報酬率(%)": "策略年化(%)",
+        "正二年化報酬率(%)": "正二年化(%)", "策略最大回撤率(%)": "策略回撤(%)",
+        "正二最大回撤率(%)": "正二回撤(%)", "相對正二回撤改善(百分點)": "回撤改善(百分點)",
         "最大有效槓桿中位數(倍)": "最大有效槓桿(倍)",
         "獲利因子中位數": "獲利因子", "交易次數中位數": "交易次數",
         "期末強制平倉損益中位數": "期末強平損益", "歷史最低運作資金中位數": "歷史最低運作資金",
@@ -751,24 +794,28 @@ else:
                           paper_bgcolor="white", plot_bgcolor="white", showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    scenario = result.get("scenario_analysis") or {}
     if isinstance(scenario.get("comparison"), pd.DataFrame) and not scenario["comparison"].empty:
-        st.subheader("多截止日＋六種未來情境＋正二比較")
-        st.caption(f"共同截止日：{', '.join(scenario.get('cutoff_dates', []))}｜每條未來延伸{scenario.get('future_days', '—')}個交易日")
+        st.subheader("正式主排名｜多截止日＋六種未來情境＋正二比較")
+        st.caption(f"共同截止日：{', '.join(scenario.get('cutoff_dates', []))}｜每條未來延伸{scenario.get('future_days', '—')}個交易日｜排名口徑：{scenario.get('ranking_basis', '共同期末總權益')}")
         scenario_compare = scenario["comparison"].copy()
-        st.dataframe(scenario_compare.style.apply(_highlight_best, axis=1), use_container_width=True, hide_index=True)
+        main_cols = [c for c in [
+            "策略名稱", "情境路徑數", "期末總權益超越正二比例(%)",
+            "策略期末總權益中位數", "正二期末資產中位數", "期末資產差中位數", "期末資產差P10",
+            "策略總權益年化中位數(%)", "正二年化中位數(%)", "相對正二年化差中位數(百分點)",
+            "策略最大回撤率中位數(%)", "正二最大回撤率中位數(%)", "相對正二回撤改善中位數(百分點)",
+            "策略最差最大回撤率(%)", "正二最差最大回撤率(%)", "斷頭路徑比例(%)",
+            "尚未自然出場比例(%)", "已實現損益中位數", "已實現損益P10"
+        ] if c in scenario_compare.columns]
+        st.dataframe(scenario_compare[main_cols].style.apply(_highlight_best, axis=1), use_container_width=True, hide_index=True)
         sbest = scenario_compare.iloc[0]
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("情境排名第一", str(sbest["策略名稱"]),
-                  help="先依超越正二路徑比例排序，再看已實現年化中位數與P10。")
-        s2.metric("超越正二路徑比例", f"{float(sbest['超越正二路徑比例(%)']):.1f}%",
-                  help="在所有共同截止日、未來狀態與seed中，策略已實現年化報酬高於同一路徑00631L的比例。")
-        s3.metric("已實現年化中位數", f"{float(sbest['已實現年化中位數(%)']):.2f}%",
-                  help="排除延伸期末仍未自然出場部位後，所有情境路徑的年化報酬中位數。")
-        s4.metric("已實現損益P10", f"{float(sbest['已實現損益P10']):,.0f}",
-                  help="只有10%的情境比此結果更差，用來觀察悲觀情境。")
-        s5.metric("尚未自然出場比例", f"{float(sbest['尚未自然出場比例(%)']):.1f}%",
-                  help="延伸至自動上限後仍有部位未依策略規則出場的情境比例；越低越不受期末強平干擾。")
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
+        s1.metric("情境排名第一", str(sbest["策略名稱"]))
+        s2.metric("超越正二比例", f"{float(sbest.get('期末總權益超越正二比例(%)', 0)):.1f}%")
+        s3.metric("策略／正二期末資產", f"{float(sbest.get('策略期末總權益中位數', 0)):,.0f}／{float(sbest.get('正二期末資產中位數', 0)):,.0f}")
+        s4.metric("策略／正二年化", f"{float(sbest.get('策略總權益年化中位數(%)', 0)):.2f}%／{float(sbest.get('正二年化中位數(%)', 0)):.2f}%")
+        s5.metric("策略／正二回撤", f"{float(sbest.get('策略最大回撤率中位數(%)', 0)):.2f}%／{float(sbest.get('正二最大回撤率中位數(%)', 0)):.2f}%")
+        s6.metric("未自然出場比例", f"{float(sbest.get('尚未自然出場比例(%)', 0)):.1f}%",
+                  help="只表示模擬終點仍有持倉，不再作為排名扣分或必須消除的問題。")
 
         state_summary = scenario.get("state_summary")
         if isinstance(state_summary, pd.DataFrame) and not state_summary.empty:
@@ -813,6 +860,8 @@ else:
                 "position_action": "口數變化", "position_compounding": "複利啟用",
                 "available_equity_at_entry": "進場前部位計算權益", "effective_leverage": "有效槓桿",
                 "margin_utilization_pct": "保證金占用率(%)", "safe_capital_balance": "安全資金餘額",
+                "base_risk_fraction": "原始風險率", "effective_risk_fraction": "煞車後風險率",
+                "drawdown_brake_multiplier": "回撤煞車倍率", "realized_equity_drawdown_pct": "已實現權益回撤(%)",
                 "pnl_amount": "損益(元)", "holding_bars": "持有K棒", "exit_reason": "出場原因"}
             visible = [c for c in trade_columns if c in trades.columns]
             st.dataframe(trades[visible].rename(columns=trade_columns), use_container_width=True, hide_index=True)
