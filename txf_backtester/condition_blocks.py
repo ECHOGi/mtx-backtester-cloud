@@ -386,6 +386,123 @@ def close_breakdown_low(df, lookback=60, **_):
     return df["close"] < prior_low
 
 
+
+# ---------- v0.8.5：SAR / BIAS / 日K缺口 / 寶塔線 ----------
+def _sar(df, af_start=0.02, af_step=0.02, af_max=0.2):
+    return ind.parabolic_sar(df, float(af_start), float(af_step), float(af_max))
+
+
+@register("sar_flip_bullish")
+def sar_flip_bullish(df, af_start=0.02, af_step=0.02, af_max=0.2, **_):
+    """Parabolic SAR 當根由空方翻為多方。"""
+    return _sar(df, af_start, af_step, af_max)["sar_flip_bullish"]
+
+
+@register("sar_flip_bearish")
+def sar_flip_bearish(df, af_start=0.02, af_step=0.02, af_max=0.2, **_):
+    """Parabolic SAR 當根由多方翻為空方。"""
+    return _sar(df, af_start, af_step, af_max)["sar_flip_bearish"]
+
+
+@register("sar_bullish")
+def sar_bullish(df, af_start=0.02, af_step=0.02, af_max=0.2, **_):
+    """Parabolic SAR 目前為多方狀態。"""
+    return _sar(df, af_start, af_step, af_max)["sar_trend"] > 0
+
+
+@register("sar_bearish")
+def sar_bearish(df, af_start=0.02, af_step=0.02, af_max=0.2, **_):
+    """Parabolic SAR 目前為空方狀態。"""
+    return _sar(df, af_start, af_step, af_max)["sar_trend"] < 0
+
+
+@register("bias_above")
+def bias_above(df, value=5.0, period=20, ma_type="SMA", **_):
+    """乖離率高於門檻；BIAS=(close/MA-1)×100。"""
+    return ind.bias(df["close"], int(period), str(ma_type)) > float(value)
+
+
+@register("bias_below")
+def bias_below(df, value=-5.0, period=20, ma_type="SMA", **_):
+    """乖離率低於門檻。"""
+    return ind.bias(df["close"], int(period), str(ma_type)) < float(value)
+
+
+@register("bias_cross_up")
+def bias_cross_up(df, value=0.0, period=20, ma_type="SMA", **_):
+    """乖離率由下往上穿越門檻。"""
+    b = ind.bias(df["close"], int(period), str(ma_type))
+    v = float(value)
+    return (b > v) & (b.shift(1) <= v)
+
+
+@register("bias_cross_down")
+def bias_cross_down(df, value=0.0, period=20, ma_type="SMA", **_):
+    """乖離率由上往下穿越門檻。"""
+    b = ind.bias(df["close"], int(period), str(ma_type))
+    v = float(value)
+    return (b < v) & (b.shift(1) >= v)
+
+
+@register("open_gap_pct_above")
+def open_gap_pct_above(df, value=1.0, **_):
+    """開盤相對前收的有號跳空百分比高於門檻。"""
+    return ind.open_gap_pct(df) > float(value)
+
+
+@register("open_gap_pct_below")
+def open_gap_pct_below(df, value=-1.0, **_):
+    """開盤相對前收的有號跳空百分比低於門檻。"""
+    return ind.open_gap_pct(df) < float(value)
+
+
+@register("full_gap_up")
+def full_gap_up(df, min_gap_pct=0.0, **_):
+    """當根建立向上完整缺口：low > 前一根 high。"""
+    return ind.full_gap_created(df, "up", float(min_gap_pct))
+
+
+@register("full_gap_down")
+def full_gap_down(df, min_gap_pct=0.0, **_):
+    """當根建立向下完整缺口：high < 前一根 low。"""
+    return ind.full_gap_created(df, "down", float(min_gap_pct))
+
+
+@register("gap_up_unfilled")
+def gap_up_unfilled(df, min_age=5, lookback=60, min_gap_pct=0.0, **_):
+    """最近 lookback 根內的向上完整缺口，至少 min_age 根仍未回補。"""
+    return ind.unfilled_gap(df, "up", min_age, lookback, min_gap_pct)["gap_up_unfilled"]
+
+
+@register("gap_down_unfilled")
+def gap_down_unfilled(df, min_age=5, lookback=60, min_gap_pct=0.0, **_):
+    """最近 lookback 根內的向下完整缺口，至少 min_age 根仍未回補。"""
+    return ind.unfilled_gap(df, "down", min_age, lookback, min_gap_pct)["gap_down_unfilled"]
+
+
+@register("tower_flip_red")
+def tower_flip_red(df, confirm_bars=3, **_):
+    """平台研究版寶塔線由黑翻紅。"""
+    return ind.tower_line(df["close"], int(confirm_bars))["tower_flip_red"]
+
+
+@register("tower_flip_black")
+def tower_flip_black(df, confirm_bars=3, **_):
+    """平台研究版寶塔線由紅翻黑。"""
+    return ind.tower_line(df["close"], int(confirm_bars))["tower_flip_black"]
+
+
+@register("tower_red")
+def tower_red(df, confirm_bars=3, **_):
+    """平台研究版寶塔線目前為紅色。"""
+    return ind.tower_line(df["close"], int(confirm_bars))["tower_color"] > 0
+
+
+@register("tower_black")
+def tower_black(df, confirm_bars=3, **_):
+    """平台研究版寶塔線目前為黑色。"""
+    return ind.tower_line(df["close"], int(confirm_bars))["tower_color"] < 0
+
 # ---------- 組合器 ----------
 def evaluate_condition(df: pd.DataFrame, spec: dict) -> pd.Series:
     """spec = {"type": 條件名, ...其餘為該條件參數}。

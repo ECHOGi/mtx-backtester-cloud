@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.4｜期末總權益正二對照與NX回撤煞車版。
+"""MTX 台指期回測平台 v0.8.5｜SAR、BIAS、日K缺口與寶塔線研究版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -29,8 +29,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.4"
-APP_RELEASE_NAME = "期末總權益正二對照＋NX回撤煞車版"
+APP_VERSION = "v0.8.5"
+APP_RELEASE_NAME = "SAR＋BIAS＋日K缺口＋寶塔線研究版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -617,7 +617,7 @@ if run_clicked:
         zip_bytes = _result_zip(batch_name, raw_json, result)
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         zip_name = f"MTX_模擬回測_{stamp}_{_safe_name(batch_name)}.zip"
-        st.session_state["v084_result"] = {
+        st.session_state["v085_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
             "start": str(start_date), "end": str(end_date),
@@ -630,17 +630,17 @@ if run_clicked:
                 uploaded_info = upload_zip_result_to_drive(
                     auth_config=auth, parent_folder_id=parent,
                     result_folder_name=Path(zip_name).stem, zip_name=zip_name, zip_bytes=zip_bytes)
-                st.session_state["v084_result"]["drive_url"] = uploaded_info.get("folder_url", "")
+                st.session_state["v085_result"]["drive_url"] = uploaded_info.get("folder_url", "")
             except Exception as e:
-                st.session_state["v084_result"]["upload_error"] = str(e)
+                st.session_state["v085_result"]["upload_error"] = str(e)
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"回測失敗：{e}")
 
-state = st.session_state.get("v084_result")
+state = st.session_state.get("v085_result")
 st.markdown('''<div class="hero"><div class="eyebrow">FUTURES STRATEGY RESEARCH</div>
 <div class="title">台指期安全約束動態複利回測</div>
-<div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜大／小／微台自動最少口數｜斷頭檢查</div></div>''', unsafe_allow_html=True)
+<div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜SAR／BIAS／日K缺口／寶塔線｜斷頭檢查</div></div>''', unsafe_allow_html=True)
 
 with st.expander("？ 如何閱讀本頁結果", expanded=False):
     st.markdown("""
@@ -653,6 +653,8 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
 **正二相對欄位**會把策略與00631L的期末資產、年化報酬、最大回撤與差值並排顯示。回撤改善為正值，代表策略回撤比正二小。
 
 **00631L正二**使用實際價格與整數股數買進持有；2026年1拆22依事件調整股數與報酬，停牌缺值不當成價格為0。
+
+**v0.8.5新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
 """)
 
 if not state:

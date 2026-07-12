@@ -175,6 +175,18 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
                     exit_price = max(row["open"], trail)
                     exit_reason = "trailing_stop"
 
+        if exit_price is None and getattr(p, "use_sar_exit", False):
+            sar_col = "sar_stop_long" if d == 1 else "sar_stop_short"
+            sar_stop = row.get(sar_col)
+            if pd.notna(sar_stop):
+                sar_stop = float(sar_stop)
+                if d == 1 and row["low"] <= sar_stop:
+                    exit_price = min(row["open"], sar_stop)
+                    exit_reason = "sar_stop"
+                elif d == -1 and row["high"] >= sar_stop:
+                    exit_price = max(row["open"], sar_stop)
+                    exit_reason = "sar_stop"
+
         if exit_price is None and margin_line is not None:
             if d == 1 and row["low"] <= margin_line:
                 exit_price = margin_line

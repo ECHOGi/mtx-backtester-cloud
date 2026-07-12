@@ -60,6 +60,11 @@ class StrategyParams:
     use_chandelier: bool = True
     chandelier_period: int = 22
     chandelier_mult: float = 3.0
+    # v0.8.5：Parabolic SAR 自適應盤中移動停損。
+    use_sar_exit: bool = False
+    sar_af_start: float = 0.02
+    sar_af_step: float = 0.02
+    sar_af_max: float = 0.2
     # v0.5.0：獲利分段吊燈（獲利越高，吊燈倍數可放寬）
     use_profit_tier_chandelier: bool = False
     profit_tier_chandelier_period: int = 22
@@ -159,6 +164,9 @@ class StrategyParams:
     atr_period: int = 14
     vol_ma_period: int = 20
     ma_periods: tuple = tuple(DEFAULT_MA_PERIODS)
+    bias_period: int = 20
+    bias_ma_type: str = "SMA"
+    tower_confirm_bars: int = 3
     # v0.8.0：多空出場可完全分離；未指定欄位自動沿用共用 exit。
     long_exit_overrides: dict = field(default_factory=dict)
     short_exit_overrides: dict = field(default_factory=dict)
@@ -180,6 +188,7 @@ class StrategyParams:
 
 
 EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
+               "use_sar_exit", "sar_af_start", "sar_af_step", "sar_af_max",
                "use_profit_tier_chandelier", "profit_tier_chandelier_period",
                "profit_tier_amounts", "profit_tier_atr_multiples", "profit_tier_threshold_mode",
                "profit_tier_mults", "profit_tier_reference",
@@ -253,7 +262,9 @@ def config_from_params(p: StrategyParams, name: str = "MACD_BB_Chandelier_v1",
         # 顯示用指標參數一併保存，載回時介面才能還原
         "display": {"kd_period": p.kd_period, "rsi_period": p.rsi_period,
                     "atr_period": p.atr_period, "vol_ma_period": p.vol_ma_period,
-                    "ma_periods": list(p.ma_periods)},
+                    "ma_periods": list(p.ma_periods),
+                    "bias_period": p.bias_period, "bias_ma_type": p.bias_ma_type,
+                    "tower_confirm_bars": p.tower_confirm_bars},
     }
 
 
@@ -334,7 +345,8 @@ def add_indicator_columns(df: pd.DataFrame, p: StrategyParams) -> pd.DataFrame:
     m = ind.macd(close, p.macd_fast, p.macd_slow, p.macd_signal)
     b = ind.bollinger(close, p.bb_period, p.bb_std)
     ch = ind.chandelier_exit(out, p.chandelier_period, p.chandelier_mult)
-    out = pd.concat([out, m, b, ch], axis=1)
+    sar = ind.parabolic_sar(out, p.sar_af_start, p.sar_af_step, p.sar_af_max)
+    out = pd.concat([out, m, b, ch, sar], axis=1)
 
     # v0.5.0：若啟用獲利分段吊燈，預先計算各倍數的吊燈線，供 backtester 依浮盈選用。
     if getattr(p, "use_profit_tier_chandelier", False):
@@ -350,6 +362,12 @@ def add_indicator_columns(df: pd.DataFrame, p: StrategyParams) -> pd.DataFrame:
     out["rsi"] = ind.rsi(close, p.rsi_period)
     out["atr"] = ind.atr(out, p.atr_period)
     out["vol_ma"] = ind.volume_ma(out["volume"], p.vol_ma_period)
+    out["bias"] = ind.bias(close, p.bias_period, p.bias_ma_type)
+    tower = ind.tower_line(close, p.tower_confirm_bars)
+    out["tower_color"] = tower["tower_color"]
+    out["tower_flip_red"] = tower["tower_flip_red"]
+    out["tower_flip_black"] = tower["tower_flip_black"]
+    out["open_gap_pct"] = ind.open_gap_pct(out)
     for n in p.ma_periods:
         out[f"sma_{n}"] = ind.sma(close, n)
     if p.ma_filter_enabled:

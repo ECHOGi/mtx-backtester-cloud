@@ -5,8 +5,8 @@ backtester.py - 單一持倉回測引擎（避免 look-ahead bias）。
 規則：
 - 進場：第 i 根「收盤」訊號成立 -> 第 i+1 根「開盤價」進場（含滑價）
 - 出場優先順序（同一根 K 棒內）：
-    斷頭開盤跳空 > 固定停損 > 固定停利 > 移動停損 > 斷頭盤中觸價
-    > 吊燈出場 > MACD 反向 > 條件出場
+    斷頭開盤跳空 > 固定停損 > 固定停利 > 移動停損 > SAR移動停損
+    > 斷頭盤中觸價 > 吊燈出場 > MACD 反向 > 條件出場
   * v0.5.1 起可設定「獲利放大後排除 MACD 反向」，讓分段吊燈真正主導後段出場。
   * v0.6.5 起支援以「最大順向浮盈 ÷ 進場前已完成 K 棒 ATR」作為相對市場波動階梯。
   * v0.6.6 起支援「進場 ATR × 倍數」停損，並可在預定停損風險超過上限時略過進場。
@@ -750,6 +750,21 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     if row["high"] >= trail:
                         exit_price = max(row["open"], trail)
                         exit_reason = "trailing_stop"
+
+            # c1) Parabolic SAR 自適應移動停損（盤中觸價）。
+            # sar_stop_long / short 是由前一根以前的狀態推算出的當根停損線，
+            # 不使用當根完成後才知道的轉向 SAR 顯示值。
+            if exit_price is None and getattr(active_p, "use_sar_exit", False):
+                sar_col = "sar_stop_long" if d == 1 else "sar_stop_short"
+                sar_stop = row.get(sar_col)
+                if pd.notna(sar_stop):
+                    sar_stop = float(sar_stop)
+                    if d == 1 and row["low"] <= sar_stop:
+                        exit_price = min(row["open"], sar_stop)
+                        exit_reason = "sar_stop"
+                    elif d == -1 and row["high"] >= sar_stop:
+                        exit_price = max(row["open"], sar_stop)
+                        exit_reason = "sar_stop"
 
             # c2) 斷頭盤中觸價：安全緩衝金額被吃光，視同斷頭強制平倉
             if exit_price is None and margin_line is not None:
