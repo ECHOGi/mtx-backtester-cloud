@@ -1,4 +1,0 @@
-﻿method,rows,date_min,date_max,rollover_rows,big_gaps_gt15_days,contract_back_jumps,file,log
-stable_rollover,2798,2015-01-05,2026-06-30,139,0,0,MTX_stable_rollover_daily.csv,MTX_stable_rollover_rollover_log.csv
-volume_max_daily,2798,2015-01-05,2026-06-30,138,0,0,MTX_volume_max_daily.csv,MTX_volume_max_daily_rollover_log.csv
-oi_max_daily,2798,2015-01-05,2026-06-30,138,0,0,MTX_oi_max_daily.csv,MTX_oi_max_daily_rollover_log.csv
