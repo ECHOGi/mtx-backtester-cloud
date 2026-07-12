@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.2｜自動契約換算版（精簡介面）。
+"""MTX 台指期回測平台 v0.8.3｜未來情境、正二基準與說明版。
 
-所有操作集中在左側；中央只呈現回測結果。
+所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
 from __future__ import annotations
 
@@ -18,6 +18,9 @@ import streamlit as st
 
 from backtester import CostModel
 from batch_utils import apply_position_mode, parse_strategy_batch
+from benchmark_00631l import (BENCHMARK_NAME, benchmark_metrics,
+                              historical_buy_hold_curve, load_benchmark)
+from future_scenarios import ScenarioConfig, run_cutoff_scenarios
 from config import DEFAULT_SYMBOL, SYMBOLS
 from continuous_contract import build_session_continuous
 from data_loader import clean_data, load_folder
@@ -26,8 +29,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.2"
-APP_RELEASE_NAME = "自動契約換算版"
+APP_VERSION = "v0.8.3"
+APP_RELEASE_NAME = "未來情境＋正二基準＋說明版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -87,6 +90,41 @@ def _default_prepared_path() -> Path:
         if p.exists():
             return p
     return candidates[0]
+
+
+def _benchmark_cache_path() -> Path:
+    return Path(__file__).resolve().parent / "data" / "benchmark" / "00631L_twse.csv"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_benchmark_official(start_text: str, end_text: str, cache_text: str, refresh: bool = False):
+    return load_benchmark(start_text, end_text, cache_path=cache_text, refresh=refresh)
+
+
+def _parse_benchmark_upload(uploaded_file) -> pd.DataFrame | None:
+    if uploaded_file is None:
+        return None
+    raw = uploaded_file.getvalue()
+    for enc in ("utf-8-sig", "cp950", "big5"):
+        try:
+            return pd.read_csv(io.BytesIO(raw), encoding=enc)
+        except Exception:
+            continue
+    raise ValueError("00631L CSV無法辨識編碼")
+
+
+def _default_cutoffs(dmin, dmax) -> list[pd.Timestamp]:
+    start_y, end_y = pd.Timestamp(dmin).year, pd.Timestamp(dmax).year
+    targets = []
+    for year in range(max(start_y, 2021), end_y + 1):
+        target = pd.Timestamp(year, 12, 31)
+        if year == end_y:
+            target = pd.Timestamp(dmax)
+        if pd.Timestamp(dmin) < target <= pd.Timestamp(dmax):
+            targets.append(target)
+    if pd.Timestamp(dmax).normalize() not in [x.normalize() for x in targets]:
+        targets.append(pd.Timestamp(dmax).normalize())
+    return sorted(set(targets))
 
 
 def _add_previous_trade_date(df: pd.DataFrame) -> pd.DataFrame:
@@ -191,6 +229,20 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
         z.writestr("01_隨機路徑分布.csv", result["distribution"].to_csv(index=False).encode("utf-8-sig"))
         z.writestr("strategy_batch.json", raw_json.encode("utf-8"))
         z.writestr("02_執行設定.json", json.dumps(result.get("run_settings", {}), ensure_ascii=False, indent=2).encode("utf-8"))
+        if isinstance(result.get("benchmark_data"), pd.DataFrame) and not result["benchmark_data"].empty:
+            z.writestr("03_00631L正二基準_分割調整資料.csv",
+                       result["benchmark_data"].to_csv(index=False).encode("utf-8-sig"))
+        if result.get("benchmark_metrics"):
+            z.writestr("04_00631L正二基準績效.json",
+                       json.dumps(result["benchmark_metrics"], ensure_ascii=False, indent=2).encode("utf-8"))
+        scenario = result.get("scenario_analysis") or {}
+        if isinstance(scenario.get("comparison"), pd.DataFrame) and not scenario["comparison"].empty:
+            z.writestr("05_多截止日未來情境_策略比較.csv",
+                       scenario["comparison"].to_csv(index=False).encode("utf-8-sig"))
+            z.writestr("06_多截止日未來情境_完整分布.csv",
+                       scenario["distribution"].to_csv(index=False).encode("utf-8-sig"))
+            z.writestr("07_各市場狀態比較.csv",
+                       scenario["state_summary"].to_csv(index=False).encode("utf-8-sig"))
         readme = [
             f"# {batch_name}", "", f"- 平台：{APP_VERSION}",
             f"- 實際執行路徑：{len(result['seeds'])}",
@@ -207,6 +259,17 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
             ]
         validation = result.get("simulation_validation") or {}
         readme.append(f"- 模擬OHLCV還原驗證：{validation.get('status', '未執行')}")
+        if result.get("benchmark_metrics"):
+            bm = result["benchmark_metrics"]
+            readme += ["", "## 正二基準", f"- {bm.get('基準名稱', BENCHMARK_NAME)}",
+                       f"- 年化報酬率：{bm.get('年化報酬率(%)', '—')}%",
+                       f"- 最大回撤率：{bm.get('最大回撤率(%)', '—')}%"]
+        scenario = result.get("scenario_analysis") or {}
+        if scenario:
+            readme += ["", "## 多截止日未來情境",
+                       f"- 截止日：{', '.join(scenario.get('cutoff_dates', []))}",
+                       f"- 未來延伸：{scenario.get('future_days', '—')}個交易日",
+                       f"- 情境：{', '.join(scenario.get('scenario_states', []))}"]
         readme += ["", "## 各策略部位／複利口徑"]
         for name, rep in result["representatives"].items():
             readme.append(f"- {name}：{_position_basis_text(rep['config'])}")
@@ -300,7 +363,7 @@ with st.sidebar:
     st.markdown('<div class="section">策略</div>', unsafe_allow_html=True)
     auth = _drive_auth()
     source_options = (["Google Drive 投放箱"] if auth else []) + ["上傳 JSON", "本機投放箱"]
-    source = st.selectbox("策略來源", source_options, label_visibility="collapsed")
+    source = st.selectbox("策略來源", source_options, label_visibility="collapsed", key="strategy_source")
     raw_json = ""
     display_name = ""
     selected_drive_id = None
@@ -309,7 +372,7 @@ with st.sidebar:
         try:
             files = _cloud_files(json.dumps(auth, ensure_ascii=False), folder_id)
             if files:
-                pick = st.selectbox("策略檔", range(len(files)), format_func=lambda i: files[i]["name"])
+                pick = st.selectbox("策略檔", range(len(files)), format_func=lambda i: files[i]["name"], key="drive_strategy_pick")
                 display_name = files[pick]["name"]
                 selected_drive_id = files[pick]["id"]
             else:
@@ -326,7 +389,7 @@ with st.sidebar:
         inbox.mkdir(parents=True, exist_ok=True)
         files = sorted(inbox.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         if files:
-            pick = st.selectbox("策略檔", range(len(files)), format_func=lambda i: files[i].name)
+            pick = st.selectbox("策略檔", range(len(files)), format_func=lambda i: files[i].name, key="local_strategy_pick")
             raw_json = files[pick].read_text(encoding="utf-8-sig")
             display_name = files[pick].name
         else:
@@ -334,36 +397,64 @@ with st.sidebar:
     st.caption("JSON含 sweep／sweeps 時會自動展開，單批最多50組策略。")
 
     st.markdown('<div class="section">回測方式</div>', unsafe_allow_html=True)
-    timeframe_mode = st.selectbox("週期", ["依策略JSON", "完整日K", "模擬60分K", "模擬30分K", "日K多方＋60分空方＋30分執行"])
-    path_count = st.select_slider("模擬路徑", options=[1, 5, 10, 20, 30, 50, 100], value=20)
-    st.caption("若所有策略只需要完整日K，系統會自動改為單路徑快速模式。")
+    research_mode = st.selectbox(
+        "研究模式", ["標準回測", "多截止日＋未來情境＋正二比較"],
+        help="標準回測檢查完整歷史結果；多截止日模式會在多個歷史終點後接上六種未來日K情境，並與00631L正二使用相同未來來源區段比較。")
+    timeframe_mode = st.selectbox(
+        "資料週期", ["依策略JSON", "完整日K", "模擬60分K", "模擬30分K", "日K多方＋60分空方＋30分執行"],
+        help="依策略JSON會讀取每個策略自己的週期設定。完整日K不受盤中價格順序影響；30分與60分為受原始日夜OHLC約束的模擬K線。")
+    path_count = st.select_slider(
+        "盤中模擬情境數", options=[1, 5, 10, 20, 30, 50, 100], value=20,
+        help="一條情境代表同一組日夜OHLC下，一種可能的盤中30分K走法。僅使用完整日K時不受盤中順序影響，系統會自動只回測一次。")
+    st.caption("僅使用完整日K時，盤中模擬不影響結果，系統只回測一次。")
 
     st.markdown('<div class="section">部位</div>', unsafe_allow_html=True)
-    position_label = st.selectbox("部位模式", ["依策略JSON", "固定1口", "動態安全資金", "動態安全資金＋口數上限"])
-    mode_map = {"依策略JSON": "json", "固定1口": "fixed", "動態安全資金": "dynamic_safe_capital",
-                "動態安全資金＋口數上限": "dynamic_safe_capital_capped"}
-    initial_capital = st.number_input("初始資金", min_value=50000, value=500000, step=50000)
-    if position_label.startswith("動態"):
-        safe_per_small = st.number_input("每口小台安全資金", min_value=100000, value=500000, step=50000)
-        position_compounding = st.checkbox("獲利後啟用複利加口", value=False,
-                                           help="關閉＝舊口徑：獲利不加口、虧損仍會減口；開啟才使用完整複利。")
-        if position_label.endswith("口數上限"):
-            max_small = st.number_input("最大等值小台口數", min_value=1, value=10, step=1)
-        else:
-            max_small = 200
+    position_label = st.selectbox(
+        "部位模式", ["依策略JSON", "覆寫為安全約束動態複利"],
+        help="安全約束動態複利會依當下帳戶權益增減曝險，但每次加口都必須同時通過安全資金、保證金、停損、跳空壓力與回撤準備檢查。")
+    mode_map = {"依策略JSON": "json", "覆寫為安全約束動態複利": "dynamic_safe_capital"}
+    initial_capital = st.number_input(
+        "初始資金", min_value=50000, value=500000, step=50000,
+        help="策略與00631L正二基準都使用相同起始資金。這是本次帳戶資金，不是單口保證金。")
+    if position_label.startswith("覆寫"):
+        safe_per_small = st.number_input(
+            "每口小台等值安全資金", min_value=100000, value=500000, step=50000,
+            help="每累積這筆可用安全資金，才允許增加1口小台等值曝險。這是安全政策，不應用歷史績效挑選甜蜜點。")
     else:
-        safe_per_small, max_small, position_compounding = 500000, 10, False
+        safe_per_small = 500000
+    max_small, position_compounding = 0, True
+
+    st.markdown('<div class="section">正二基準</div>', unsafe_allow_html=True)
+    benchmark_enabled = st.checkbox(
+        "納入00631L正二比較", value=True,
+        help="使用元大台灣50正2（00631L）實際歷史價格。2026年1拆22會以分割事件調整，不會被誤判為暴跌。")
+    benchmark_source = st.selectbox(
+        "正二資料來源", ["TWSE官方自動下載", "上傳00631L CSV"],
+        disabled=not benchmark_enabled,
+        help="自動下載會逐月讀取證交所日行情並快取；上傳模式至少需要日期與收盤價欄位。")
+    benchmark_upload = None
+    if benchmark_enabled and benchmark_source == "上傳00631L CSV":
+        benchmark_upload = st.file_uploader("00631L歷史資料", type=["csv"], key="benchmark_csv",
+                                            help="可使用原始未調整價格；平台會依1拆22事件建立調整後報酬。")
+    benchmark_fee_rate = st.number_input(
+        "正二買進手續費率(%)", min_value=0.0, value=0.1425, step=0.01,
+        disabled=not benchmark_enabled,
+        help="只在起始日買進一次，保留買不到整數股的現金。可依實際券商折扣調整。") / 100.0
 
     with st.expander("進階設定", expanded=False):
-        symbol = st.selectbox("商品", list(SYMBOLS), index=list(SYMBOLS).index(DEFAULT_SYMBOL))
-        data_path = st.text_input("資料位置", value=prepared_default)
-        fee = st.number_input("單邊手續費", min_value=0.0, value=float(SYMBOLS[symbol]["fee"]), step=1.0)
-        slippage = st.number_input("單邊滑價點數", min_value=0.0, value=float(SYMBOLS[symbol]["slippage_points"]), step=.5)
-        use_tax = st.checkbox("計入期交稅", value=True)
-        use_margin_call_check = st.checkbox("啟用斷頭檢查", value=True)
-        st.caption("固定口數安全緩衝＝初始資金－原始保證金；動態部位依帳戶權益與維持保證金判斷。")
-        base_seed = st.number_input("模擬 seed", min_value=0, max_value=2_000_000_000, value=20260712, step=1)
-
+        symbol = st.selectbox("商品", list(SYMBOLS), index=list(SYMBOLS).index(DEFAULT_SYMBOL),
+                              help="策略訊號資料來源。動態部位會自動用大台、小台、微台組成相同曝險且口數最少的組合。")
+        data_path = st.text_input("資料位置", value=prepared_default,
+                                  help="可指定已整理的日夜盤連續契約CSV，或原始資料資料夾。")
+        fee = st.number_input("單邊手續費", min_value=0.0, value=float(SYMBOLS[symbol]["fee"]), step=1.0,
+                              help="目前商品每口單邊手續費；自動契約換算後會依大台、小台、微台各自費用計算。")
+        slippage = st.number_input("單邊滑價點數", min_value=0.0, value=float(SYMBOLS[symbol]["slippage_points"]), step=.5,
+                                   help="每次進場與出場各扣除的價格滑價。換月價差尚未另外模擬。")
+        use_tax = st.checkbox("計入期交稅", value=True, help="依成交價格與商品稅率估算期交稅。")
+        use_margin_call_check = st.checkbox("啟用斷頭檢查", value=True,
+                                            help="每日權益低於維持保證金時強制平倉；策略可設定斷頭後停止交易。")
+        base_seed = st.number_input("模擬seed", min_value=0, max_value=2_000_000_000, value=20260712, step=1,
+                                    help="相同seed會重現相同盤中與未來情境路徑，方便不同策略公平比較。")
     try:
         preview = _load_session_data(data_path, symbol)
         dmin = pd.to_datetime(preview["trade_date"]).min().date()
@@ -374,11 +465,33 @@ with st.sidebar:
         else:
             start_date, end_date = dmin, dmax
         st.caption(f"資料：{dmin}～{dmax}｜{len(preview):,}個時段")
+        available_trade_dates = sorted(pd.to_datetime(preview["trade_date"], errors="coerce").dropna().dt.normalize().unique())
+        cutoff_values = []
+        for target in _default_cutoffs(dmin, dmax):
+            eligible = [pd.Timestamp(x) for x in available_trade_dates if pd.Timestamp(x) <= target]
+            if eligible:
+                cutoff_values.append(max(eligible))
+        cutoff_values = sorted(set(cutoff_values))
+        if research_mode.startswith("多截止日"):
+            if len(cutoff_values) <= 3:
+                default_cutoffs = cutoff_values
+            else:
+                default_cutoffs = [cutoff_values[0], cutoff_values[len(cutoff_values)//2], cutoff_values[-1]]
+            selected_cutoffs = st.multiselect(
+                "共同歷史截止日", cutoff_values, default=default_cutoffs,
+                format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
+                help="每個截止日都會重新建立當時可見的歷史，再接上六種共同未來日K情境；不是事後只扣除最後一筆浮盈。")
+            future_paths_per_state = st.select_slider(
+                "每種未來狀態路徑數", options=[1, 2, 3, 5], value=1,
+                help="六種未來狀態各產生相同數量的路徑。三個策略與正二共用相同來源日期與seed。")
+        else:
+            selected_cutoffs, future_paths_per_state = [], 0
         data_error = ""
     except Exception as e:
         preview = pd.DataFrame()
         start_date = end_date = None
         data_error = str(e)
+        selected_cutoffs, future_paths_per_state = [], 0
         st.error(f"資料無法讀取：{e}")
 
     run_clicked = st.button("開始回測", type="primary", use_container_width=True, disabled=bool(data_error))
@@ -424,7 +537,44 @@ if run_clicked:
         progress = st.sidebar.progress(0, text="準備回測")
         result = run_batch_monte_carlo(
             filtered, final_items, cost, seeds, float(initial_capital),
-            progress_callback=lambda pct, txt: progress.progress(pct, text=txt))
+            progress_callback=lambda pct, txt: progress.progress(min(pct * 0.35, 0.35), text="歷史回測｜" + txt))
+
+        benchmark_df = pd.DataFrame()
+        benchmark_info = None
+        if benchmark_enabled:
+            if benchmark_source == "上傳00631L CSV":
+                uploaded_benchmark = _parse_benchmark_upload(benchmark_upload)
+                if uploaded_benchmark is None:
+                    raise ValueError("已選擇上傳00631L CSV，但尚未選擇檔案")
+                benchmark_df, benchmark_info = load_benchmark(
+                    start_date, end_date, uploaded=uploaded_benchmark)
+            else:
+                benchmark_df, benchmark_info = _load_benchmark_official(
+                    str(start_date), str(end_date), str(_benchmark_cache_path()), False)
+            benchmark_part = benchmark_df[(benchmark_df["date"] >= pd.Timestamp(start_date)) &
+                                          (benchmark_df["date"] <= pd.Timestamp(end_date))]
+            benchmark_curve = historical_buy_hold_curve(
+                benchmark_part, float(initial_capital), float(benchmark_fee_rate))
+            result["benchmark_metrics"] = benchmark_metrics(benchmark_curve, float(initial_capital))
+            bm_annual = float(result["benchmark_metrics"].get("年化報酬率(%)", 0.0))
+            result["comparison"]["相對正二年化差(百分點)"] = (
+                pd.to_numeric(result["comparison"]["年化報酬率中位數(%)"], errors="coerce") - bm_annual
+            ).round(2)
+            result["comparison"]["歷史年化超越正二"] = result["comparison"]["相對正二年化差(百分點)"] > 0
+            result["benchmark_data"] = benchmark_df
+            result["benchmark_curve"] = benchmark_curve
+            result["benchmark_info"] = benchmark_info.__dict__ if benchmark_info else {}
+
+        if research_mode.startswith("多截止日"):
+            if not selected_cutoffs:
+                raise ValueError("多截止日模式至少需要選擇一個共同截止日")
+            scenario = run_cutoff_scenarios(
+                filtered, final_items, cost, float(initial_capital), selected_cutoffs,
+                benchmark_df=benchmark_df if benchmark_enabled else None,
+                benchmark_buy_fee_rate=float(benchmark_fee_rate),
+                config=ScenarioConfig(paths_per_state=int(future_paths_per_state), seed=int(base_seed)),
+                progress_callback=lambda pct, txt: progress.progress(0.35 + pct * 0.65, text=txt))
+            result["scenario_analysis"] = scenario
         progress.empty()
         result["run_settings"] = {
             "initial_capital": float(initial_capital),
@@ -434,12 +584,18 @@ if run_clicked:
             "position_ui_mode": position_label,
             "position_compounding_ui": bool(position_compounding),
             "timeframe_mode": timeframe_mode,
+            "research_mode": research_mode,
+            "benchmark_enabled": bool(benchmark_enabled),
+            "benchmark_source": benchmark_source if benchmark_enabled else "停用",
+            "benchmark_buy_fee_rate": float(benchmark_fee_rate),
+            "scenario_cutoff_dates": [str(pd.Timestamp(x).date()) for x in selected_cutoffs],
+            "scenario_paths_per_state": int(future_paths_per_state),
             "expanded_strategy_count": len(final_items),
         }
         zip_bytes = _result_zip(batch_name, raw_json, result)
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         zip_name = f"MTX_模擬回測_{stamp}_{_safe_name(batch_name)}.zip"
-        st.session_state["v081_result"] = {
+        st.session_state["v083_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
             "start": str(start_date), "end": str(end_date),
@@ -452,29 +608,41 @@ if run_clicked:
                 uploaded_info = upload_zip_result_to_drive(
                     auth_config=auth, parent_folder_id=parent,
                     result_folder_name=Path(zip_name).stem, zip_name=zip_name, zip_bytes=zip_bytes)
-                st.session_state["v081_result"]["drive_url"] = uploaded_info.get("folder_url", "")
+                st.session_state["v083_result"]["drive_url"] = uploaded_info.get("folder_url", "")
             except Exception as e:
-                st.session_state["v081_result"]["upload_error"] = str(e)
+                st.session_state["v083_result"]["upload_error"] = str(e)
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"回測失敗：{e}")
 
-state = st.session_state.get("v081_result")
-st.markdown(f'''<div class="hero"><div class="eyebrow">MONTE CARLO FUTURES RESEARCH</div>
-<div class="title">台指期多週期安全回測</div>
-<div class="sub">日夜盤OHLC約束模擬｜30分K生成｜60分K一致聚合｜多空獨立出場｜可選複利口數｜斷頭檢查</div></div>''', unsafe_allow_html=True)
+state = st.session_state.get("v083_result")
+st.markdown('''<div class="hero"><div class="eyebrow">FUTURES STRATEGY RESEARCH</div>
+<div class="title">台指期安全約束動態複利回測</div>
+<div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜大／小／微台自動最少口數｜斷頭檢查</div></div>''', unsafe_allow_html=True)
+
+with st.expander("？ 如何閱讀本頁結果", expanded=False):
+    st.markdown("""
+**標準回測**呈現實際歷史期間結果；若全部只用完整日K，只有一個確定結果，所以不顯示P25、P10與箱型分布。
+
+**期末強制平倉損益**是回測最後一天仍未自然出場的部位，平台為結算而假設平倉的損益。正式判斷應同時看「扣除期末強平後損益」。
+
+**多截止日＋未來情境**會在多個歷史截止日後接上六種由歷史資料抽樣的未來日K。排名優先看：超越正二路徑比例、已實現年化中位數、P10、斷頭率與尚未自然出場比例。
+
+**00631L正二**使用實際價格與整數股數買進持有；2026年1拆22依事件調整股數與報酬，停牌缺值不當成價格為0。
+""")
 
 if not state:
-    st.markdown('<div class="result-note">請在左側選擇策略、週期與部位模式後開始回測。中央區只呈現回測結果。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="result-note">請在左側選擇策略、研究模式、週期與部位模式後開始回測。</div>', unsafe_allow_html=True)
 else:
     result = state["result"]
     compare = result["comparison"]
+    deterministic = bool(result.get("deterministic_1d_fast_mode"))
     best = compare.iloc[0] if not compare.empty else None
-    st.caption(f"{state['batch_name']}｜{state['start']}～{state['end']}｜實際{state['effective_paths']}條路徑（原設定{state['requested_paths']}）")
+    st.caption(f"{state['batch_name']}｜{state['start']}～{state['end']}｜實際{state['effective_paths']}條盤中路徑（原設定{state['requested_paths']}）")
 
     badge_html = []
-    if result.get("deterministic_1d_fast_mode"):
-        badge_html.append('<span class="badge">⚡ 純日K單路徑快速模式</span>')
+    if deterministic:
+        badge_html.append('<span class="badge">⚡ 純日K單次確定結果</span>')
     validation = result.get("simulation_validation") or {}
     if validation.get("status") == "通過":
         badge_html.append(f'<span class="badge">✓ 模擬OHLCV還原通過（{validation.get("checked_seeds", 0)}條）</span>')
@@ -482,51 +650,132 @@ else:
         badge_html.append(f'<span class="badge">⚠ 模擬還原失敗（{validation.get("error_count", 0)}項）</span>')
     if result.get("run_settings", {}).get("use_margin_call_check"):
         badge_html.append('<span class="badge">✓ 斷頭檢查已啟用</span>')
+    if result.get("benchmark_metrics"):
+        badge_html.append('<span class="badge">✓ 00631L正二已納入</span>')
+    if result.get("scenario_analysis"):
+        badge_html.append('<span class="badge">✓ 多截止日未來情境已完成</span>')
     st.markdown('<div class="badge-row">' + ''.join(badge_html) + '</div>', unsafe_allow_html=True)
 
-    if best is not None:
-        st.markdown(f'<div class="best-banner">最佳策略：{best["策略名稱"]}</div>', unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("年化報酬率中位數", f"{float(best.get('年化報酬率中位數(%)', 0)):.2f}%")
-        c2.metric("報酬回撤比中位數", best.get("報酬回撤比中位數", "—"))
-        c3.metric("最大回撤中位數", f"{float(best.get('最大回撤中位數', 0)):,.0f}")
-        c4.metric("獲利因子中位數", best.get("獲利因子中位數", "—"))
+    if result.get("benchmark_metrics"):
+        bm = result["benchmark_metrics"]
+        info = result.get("benchmark_info") or {}
+        st.subheader("00631L正二基準")
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("正二年化報酬率", f"{float(bm.get('年化報酬率(%)', 0)):.2f}%",
+                  help="使用相同初始資金，起始日以整數股數買進00631L後持有至期末的複合年化報酬率。")
+        b2.metric("正二最大回撤率", f"{float(bm.get('最大回撤率(%)', 0)):.2f}%",
+                  help="正二資產從歷史高點跌到後續低點的最大百分比跌幅。")
+        b3.metric("正二期末資產", f"{float(bm.get('期末資產(元)', 0)):,.0f}",
+                  help="包含未投入現金與持有00631L市值。分割前後總資產保持連續。")
+        b4.metric("分割後持有股數", f"{int(bm.get('持有股數', 0)):,}",
+                  help="若持有期間跨過2026年1拆22，股數會在恢復交易日自動乘22。")
+        source_text = info.get("source", "")
+        if source_text:
+            st.caption(f"資料來源：{source_text}｜{info.get('start', '')}～{info.get('end', '')}｜{info.get('rows', 0):,}筆")
 
-    st.subheader("策略穩健度比較")
-    compare_cols = [c for c in [
-        "策略名稱", "報酬回撤比中位數", "總損益中位數", "總損益P25",
-        "最大回撤中位數", "年化報酬率中位數(%)", "獲利路徑比例(%)",
-        "獲利因子中位數", "交易次數中位數", "期末強制平倉損益中位數",
-        "歷史最低運作資金中位數", "斷頭路徑數"] if c in compare.columns]
+    if best is not None:
+        label_suffix = "" if deterministic else "中位數"
+        st.markdown(f'<div class="best-banner">歷史回測排序第一：{best["策略名稱"]}</div>', unsafe_allow_html=True)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric(f"年化報酬率{label_suffix}", f"{float(best.get('年化報酬率中位數(%)', 0)):.2f}%",
+                  help="以初始資金與期末帳戶價值換算的複合年化報酬率；包含期末尚未自然出場部位。")
+        c2.metric(f"報酬回撤比{label_suffix}", best.get("報酬回撤比中位數", "—"),
+                  help="總損益除以最大回撤絕對值。越高代表每承受一元歷史回撤換得的獲利越多。")
+        c3.metric(f"最大回撤{label_suffix}", f"{float(best.get('最大回撤中位數', 0)):,.0f}",
+                  help="帳戶權益從歷史高點到後續低點的最大金額回落；不是從初始資金直接虧掉的金額。")
+        c4.metric("扣除期末強平後損益", f"{float(best.get('扣除期末強制平倉後損益中位數', 0)):,.0f}",
+                  help="排除回測結束時仍未自然出場部位的假設平倉損益，只保留已完成交易。")
+        c5.metric("最大有效槓桿", f"{float(best.get('最大有效槓桿中位數(倍)', 0) or 0):.2f}倍",
+                  help="進場時名目曝險相對帳戶可用權益的最高倍數。")
+
+    st.subheader("歷史回測策略比較")
+    if deterministic:
+        compare_cols = [c for c in [
+            "策略名稱", "報酬回撤比中位數", "總損益中位數",
+            "扣除期末強制平倉後損益中位數", "最大回撤中位數",
+            "最大回撤率中位數(%)", "年化報酬率中位數(%)", "相對正二年化差(百分點)", "歷史年化超越正二",
+            "最大有效槓桿中位數(倍)", "獲利因子中位數", "交易次數中位數",
+            "期末強制平倉損益中位數", "歷史最低運作資金中位數", "斷頭路徑數"
+        ] if c in compare.columns]
+    else:
+        compare_cols = [c for c in [
+            "策略名稱", "報酬回撤比中位數", "總損益中位數", "總損益P25", "總損益P10",
+            "扣除期末強制平倉後損益中位數", "最大回撤中位數", "最大回撤率中位數(%)",
+            "年化報酬率中位數(%)", "相對正二年化差(百分點)", "歷史年化超越正二", "獲利路徑比例(%)", "最大有效槓桿中位數(倍)",
+            "獲利因子中位數", "交易次數中位數", "期末強制平倉損益中位數",
+            "歷史最低運作資金中位數", "斷頭路徑數"
+        ] if c in compare.columns]
     compare_view = compare[compare_cols].copy()
+    rename_single = {
+        "報酬回撤比中位數": "報酬回撤比", "總損益中位數": "總損益",
+        "扣除期末強制平倉後損益中位數": "扣除期末強平後損益",
+        "最大回撤中位數": "最大回撤", "最大回撤率中位數(%)": "最大回撤率(%)",
+        "年化報酬率中位數(%)": "年化報酬率(%)", "相對正二年化差(百分點)": "相對正二年化差(百分點)",
+        "最大有效槓桿中位數(倍)": "最大有效槓桿(倍)",
+        "獲利因子中位數": "獲利因子", "交易次數中位數": "交易次數",
+        "期末強制平倉損益中位數": "期末強平損益", "歷史最低運作資金中位數": "歷史最低運作資金",
+    }
+    if deterministic:
+        compare_view = compare_view.rename(columns=rename_single)
+
     def _highlight_best(row):
         return ["background-color:#E6F2ED;font-weight:750" if row.name == 0 else "" for _ in row]
+
     st.dataframe(compare_view.style.apply(_highlight_best, axis=1), use_container_width=True, hide_index=True)
 
     if not compare.empty:
         scatter = go.Figure()
+        if "獲利路徑比例(%)" in compare.columns:
+            size_values = compare["獲利路徑比例(%)"].fillna(100)
+        else:
+            size_values = pd.Series(100, index=compare.index)
         scatter.add_trace(go.Scatter(
-            x=compare["最大回撤中位數"].abs(), y=compare["總損益中位數"],
+            x=compare["最大回撤中位數"].abs(), y=compare["扣除期末強制平倉後損益中位數"],
             mode="markers+text", text=compare["策略名稱"], textposition="top center",
-            marker=dict(size=12 + compare["獲利路徑比例(%)"].fillna(0) / 10,
+            marker=dict(size=12 + size_values / 10,
                         color=compare["報酬回撤比中位數"], colorscale="Teal", showscale=True,
                         colorbar=dict(title="報酬回撤比")),
-            customdata=compare[["獲利路徑比例(%)", "年化報酬率中位數(%)"]],
-            hovertemplate="%{text}<br>回撤絕對值=%{x:,.0f}<br>損益=%{y:,.0f}<br>獲利路徑=%{customdata[0]:.1f}%<br>年化=%{customdata[1]:.2f}%<extra></extra>"))
-        scatter.update_layout(title="報酬與回撤散點圖", xaxis_title="最大回撤中位數絕對值（元）",
-                              yaxis_title="總損益中位數（元）", height=430,
+            hovertemplate="%{text}<br>回撤絕對值=%{x:,.0f}<br>已完成損益=%{y:,.0f}<extra></extra>"))
+        scatter.update_layout(title="已完成損益與最大回撤", xaxis_title="最大回撤絕對值（元）",
+                              yaxis_title="扣除期末強平後損益（元）", height=430,
                               margin=dict(l=20, r=20, t=55, b=20), paper_bgcolor="white", plot_bgcolor="white")
         st.plotly_chart(scatter, use_container_width=True)
 
     dist = result["distribution"]
-    if not dist.empty:
+    if not deterministic and not dist.empty:
         fig = go.Figure()
         for name, grp in dist.groupby("策略名稱", sort=False):
             fig.add_trace(go.Box(y=grp["總損益(元)"], name=name, boxmean=True))
-        fig.update_layout(title="各隨機路徑總損益分布", yaxis_title="總損益（元）",
+        fig.update_layout(title="各盤中隨機路徑總損益分布", yaxis_title="總損益（元）",
                           margin=dict(l=20, r=20, t=55, b=20), height=430,
                           paper_bgcolor="white", plot_bgcolor="white", showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
+
+    scenario = result.get("scenario_analysis") or {}
+    if isinstance(scenario.get("comparison"), pd.DataFrame) and not scenario["comparison"].empty:
+        st.subheader("多截止日＋六種未來情境＋正二比較")
+        st.caption(f"共同截止日：{', '.join(scenario.get('cutoff_dates', []))}｜每條未來延伸{scenario.get('future_days', '—')}個交易日")
+        scenario_compare = scenario["comparison"].copy()
+        st.dataframe(scenario_compare.style.apply(_highlight_best, axis=1), use_container_width=True, hide_index=True)
+        sbest = scenario_compare.iloc[0]
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("情境排名第一", str(sbest["策略名稱"]),
+                  help="先依超越正二路徑比例排序，再看已實現年化中位數與P10。")
+        s2.metric("超越正二路徑比例", f"{float(sbest['超越正二路徑比例(%)']):.1f}%",
+                  help="在所有共同截止日、未來狀態與seed中，策略已實現年化報酬高於同一路徑00631L的比例。")
+        s3.metric("已實現年化中位數", f"{float(sbest['已實現年化中位數(%)']):.2f}%",
+                  help="排除延伸期末仍未自然出場部位後，所有情境路徑的年化報酬中位數。")
+        s4.metric("已實現損益P10", f"{float(sbest['已實現損益P10']):,.0f}",
+                  help="只有10%的情境比此結果更差，用來觀察悲觀情境。")
+        s5.metric("尚未自然出場比例", f"{float(sbest['尚未自然出場比例(%)']):.1f}%",
+                  help="延伸至自動上限後仍有部位未依策略規則出場的情境比例；越低越不受期末強平干擾。")
+
+        state_summary = scenario.get("state_summary")
+        if isinstance(state_summary, pd.DataFrame) and not state_summary.empty:
+            with st.expander("各市場狀態勝負", expanded=True):
+                st.dataframe(state_summary, use_container_width=True, hide_index=True)
+        with st.expander("完整情境路徑明細", expanded=False):
+            st.dataframe(scenario["distribution"], use_container_width=True, hide_index=True)
 
     if validation.get("status") == "失敗" and validation.get("errors"):
         with st.expander("模擬還原錯誤", expanded=True):
@@ -536,14 +785,17 @@ else:
     for name in compare["策略名稱"].tolist():
         rep = result["representatives"][name]
         m = rep["metrics"]
-        with st.expander(f"{name}｜代表 seed {rep['seed']}", expanded=(name == compare.iloc[0]["策略名稱"])):
+        title = name if deterministic else f"{name}｜代表seed {rep['seed']}"
+        with st.expander(title, expanded=(name == compare.iloc[0]["策略名稱"])):
             st.caption(f"部位口徑：{_position_basis_text(rep['config'])}")
-            a, b, c, d, e = st.columns(5)
+            a, b, c, d, e, f = st.columns(6)
             a.metric("總損益", f"{float(m.get('總損益(元)', 0)):,.0f}")
-            b.metric("最大回撤", f"{float(m.get('最大回撤(元)', 0)):,.0f}")
-            c.metric("交易次數", int(m.get("交易次數", 0)))
-            d.metric("期末強平損益", f"{float(m.get('期末強制平倉損益(元)', 0)):,.0f}")
-            e.metric("最低運作資金", f"{float(m.get('歷史最低運作資金(元)', 0) or 0):,.0f}")
+            b.metric("已完成損益", f"{float(m.get('扣除期末強制平倉後損益(元)', 0)):,.0f}",
+                     help="扣除回測最後一天仍未自然出場部位的假設平倉損益。")
+            c.metric("最大回撤率", f"{float(m.get('策略標準最大回撤率(%)', m.get('最大回撤(%)', 0))):.2f}%")
+            d.metric("最大有效槓桿", f"{float(m.get('最大有效槓桿(倍)', 0) or 0):.2f}倍")
+            e.metric("期末強平損益", f"{float(m.get('期末強制平倉損益(元)', 0)):,.0f}")
+            f.metric("斷頭次數", int(m.get("斷頭次數", 0)))
             eq = rep["equity"].copy()
             if not eq.empty:
                 st.plotly_chart(_equity_figure(eq, float(state.get("initial_capital", 500000))), use_container_width=True)
@@ -552,8 +804,6 @@ else:
             if not override_df.empty:
                 st.markdown("**多空出場覆寫差異**")
                 st.dataframe(override_df, use_container_width=True, hide_index=True)
-            else:
-                st.caption("多空出場未設定覆寫，沿用共用出場規則。")
 
             trades = rep["trades"].copy()
             trade_columns = {
@@ -561,18 +811,17 @@ else:
                 "entry_price": "進場價", "exit_price": "出場價",
                 "large_quantity": "大台口數", "small_quantity": "小台口數", "micro_quantity": "微台口數",
                 "position_action": "口數變化", "position_compounding": "複利啟用",
-                "position_equity_basis": "部位權益口徑", "available_equity_at_entry": "進場前部位計算權益",
-                "effective_leverage": "有效槓桿", "margin_utilization_pct": "保證金占用率(%)",
-                "safe_capital_balance": "安全資金餘額", "pnl_amount": "損益(元)",
-                "holding_bars": "持有K棒", "exit_reason": "出場原因"}
+                "available_equity_at_entry": "進場前部位計算權益", "effective_leverage": "有效槓桿",
+                "margin_utilization_pct": "保證金占用率(%)", "safe_capital_balance": "安全資金餘額",
+                "pnl_amount": "損益(元)", "holding_bars": "持有K棒", "exit_reason": "出場原因"}
             visible = [c for c in trade_columns if c in trades.columns]
             st.dataframe(trades[visible].rename(columns=trade_columns), use_container_width=True, hide_index=True)
 
     with st.sidebar:
         st.markdown('<div class="section">結果</div>', unsafe_allow_html=True)
         if state.get("drive_url"):
-            st.success("已上傳 Google Drive")
+            st.success("已上傳Google Drive")
         elif state.get("upload_error"):
-            st.warning("雲端上傳失敗，仍可下載 ZIP")
-        st.download_button("下載完整結果 ZIP", state["zip"], file_name=state["zip_name"],
+            st.warning("雲端上傳失敗，仍可下載ZIP")
+        st.download_button("下載完整結果ZIP", state["zip"], file_name=state["zip_name"],
                            mime="application/zip", use_container_width=True)

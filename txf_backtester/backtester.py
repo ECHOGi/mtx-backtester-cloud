@@ -408,36 +408,50 @@ def _safe_capital_position_spec(stop_distance_points, p, realized: float = 0.0, 
     gap_points = max(float(getattr(p, "position_gap_stress_points", 0.0) or 0.0), 0.0)
     dd_fraction = max(float(getattr(p, "position_drawdown_reserve_fraction", 0.0) or 0.0), 0.0)
     use_stress = bool(getattr(p, "position_use_stress_capital_check", True))
-    while units > 0:
-        spec = _contract_mix_from_micro_units(units, p, cost)
+    drawdown_reserve = available_equity * dd_fraction
+
+    def candidate(unit_count: int):
+        spec = _contract_mix_from_micro_units(unit_count, p, cost)
         pv = float(spec["point_value_total"])
         normal_risk = distance * pv if distance is not None else 0.0
         stress_risk = max(normal_risk * stress_multiple, gap_points * pv)
-        drawdown_reserve = available_equity * dd_fraction
         required = float(spec["margin_amount"]) + min_buffer + drawdown_reserve
         if use_stress:
             required += stress_risk
+        return spec, normal_risk, stress_risk, required
+
+    # v0.8.3：安全條件對曝險單位具單調性，以二分搜尋取代逐口遞減。
+    # 複利帳戶成長到數百／數千單位時，不會因 while units -= 1 卡住回測。
+    lo, hi, best = 1, int(units), None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        spec, normal_risk, stress_risk, required = candidate(mid)
         if required <= available_equity:
-            safe_used = units * unit_capital
-            spec.update({
-                "risk_budget_amount": None,
-                "planned_stop_risk_amount": normal_risk if distance is not None else None,
-                "stress_risk_amount": stress_risk,
-                "stress_multiple": stress_multiple,
-                "gap_stress_points": gap_points,
-                "drawdown_reserve_amount": drawdown_reserve,
-                "available_equity_at_entry": available_equity,
-                "position_equity_basis": equity_basis,
-                "position_compounding": bool(getattr(p, "position_compounding", False)),
-                "position_sizing_mode": str(getattr(p, "position_sizing_mode", "dynamic_safe_capital")),
-                "safe_capital_per_micro_unit": unit_capital,
-                "safe_capital_used": safe_used,
-                "safe_capital_balance": available_equity - safe_used,
-                "margin_utilization_pct": float(spec["margin_amount"]) / available_equity * 100.0,
-            })
-            return spec
-        units -= 1
-    return None
+            best = (mid, spec, normal_risk, stress_risk)
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        return None
+    units, spec, normal_risk, stress_risk = best
+    safe_used = units * unit_capital
+    spec.update({
+        "risk_budget_amount": None,
+        "planned_stop_risk_amount": normal_risk if distance is not None else None,
+        "stress_risk_amount": stress_risk,
+        "stress_multiple": stress_multiple,
+        "gap_stress_points": gap_points,
+        "drawdown_reserve_amount": drawdown_reserve,
+        "available_equity_at_entry": available_equity,
+        "position_equity_basis": equity_basis,
+        "position_compounding": bool(getattr(p, "position_compounding", False)),
+        "position_sizing_mode": str(getattr(p, "position_sizing_mode", "dynamic_safe_capital")),
+        "safe_capital_per_micro_unit": unit_capital,
+        "safe_capital_used": safe_used,
+        "safe_capital_balance": available_equity - safe_used,
+        "margin_utilization_pct": float(spec["margin_amount"]) / available_equity * 100.0,
+    })
+    return spec
 
 
 def _confirmed_exit(pos: dict, key: str, raw_hit: bool, required_bars: int) -> bool:
