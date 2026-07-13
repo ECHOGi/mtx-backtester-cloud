@@ -338,15 +338,46 @@ def _chandelier_suffix(mult: float) -> str:
     return str(float(mult)).replace(".", "_").replace("-", "m")
 
 
-def add_indicator_columns(df: pd.DataFrame, p: StrategyParams) -> pd.DataFrame:
-    """加入畫圖與出場所需的指標欄位（macd_hist / chandelier_* 為出場必要）。"""
+def _indicator_signature(p: StrategyParams) -> tuple:
+    """只納入會改變基礎指標欄位的參數，供同一路徑多策略共用。"""
+    return (
+        int(p.macd_fast), int(p.macd_slow), int(p.macd_signal),
+        int(p.bb_period), float(p.bb_std),
+        int(p.chandelier_period), float(p.chandelier_mult),
+        bool(getattr(p, "use_sar_exit", False)),
+        float(getattr(p, "sar_af_start", 0.02)),
+        float(getattr(p, "sar_af_step", 0.02)),
+        float(getattr(p, "sar_af_max", 0.2)),
+        bool(getattr(p, "use_profit_tier_chandelier", False)),
+        int(getattr(p, "profit_tier_chandelier_period", p.chandelier_period) or p.chandelier_period),
+        tuple(sorted(float(x) for x in (getattr(p, "profit_tier_mults", ()) or ()))),
+        int(p.kd_period), int(p.rsi_period), int(p.atr_period), int(p.vol_ma_period),
+        tuple(int(x) for x in p.ma_periods),
+        bool(p.ma_filter_enabled), str(p.ma_filter_type), int(p.ma_filter_period),
+    )
+
+
+def add_indicator_columns(df: pd.DataFrame, p: StrategyParams, cfg: dict | None = None, indicator_cache: dict | None = None) -> pd.DataFrame:
+    """加入回測必要的指標欄位。
+
+    v0.8.6 起，SAR／BIAS／缺口／寶塔線不再對所有策略無條件預算。
+    SAR只有在作為移動出場時必須預先放入資料框；作為條件時由
+    condition_blocks 的單次快取按需計算。其餘三類也只在條件真正被引用時
+    計算，避免長情境回測為未使用指標付出成本。
+    """
+    signature = _indicator_signature(p)
+    if indicator_cache is not None and signature in indicator_cache:
+        return indicator_cache[signature].copy(deep=True)
+
     out = df.copy().reset_index(drop=True)
     close = out["close"]
     m = ind.macd(close, p.macd_fast, p.macd_slow, p.macd_signal)
     b = ind.bollinger(close, p.bb_period, p.bb_std)
     ch = ind.chandelier_exit(out, p.chandelier_period, p.chandelier_mult)
-    sar = ind.parabolic_sar(out, p.sar_af_start, p.sar_af_step, p.sar_af_max)
-    out = pd.concat([out, m, b, ch, sar], axis=1)
+    parts = [out, m, b, ch]
+    if getattr(p, "use_sar_exit", False):
+        parts.append(ind.parabolic_sar(out, p.sar_af_start, p.sar_af_step, p.sar_af_max))
+    out = pd.concat(parts, axis=1)
 
     # v0.5.0：若啟用獲利分段吊燈，預先計算各倍數的吊燈線，供 backtester 依浮盈選用。
     if getattr(p, "use_profit_tier_chandelier", False):
@@ -362,16 +393,12 @@ def add_indicator_columns(df: pd.DataFrame, p: StrategyParams) -> pd.DataFrame:
     out["rsi"] = ind.rsi(close, p.rsi_period)
     out["atr"] = ind.atr(out, p.atr_period)
     out["vol_ma"] = ind.volume_ma(out["volume"], p.vol_ma_period)
-    out["bias"] = ind.bias(close, p.bias_period, p.bias_ma_type)
-    tower = ind.tower_line(close, p.tower_confirm_bars)
-    out["tower_color"] = tower["tower_color"]
-    out["tower_flip_red"] = tower["tower_flip_red"]
-    out["tower_flip_black"] = tower["tower_flip_black"]
-    out["open_gap_pct"] = ind.open_gap_pct(out)
     for n in p.ma_periods:
         out[f"sma_{n}"] = ind.sma(close, n)
     if p.ma_filter_enabled:
         out["ma_filter"] = ind.ma(close, p.ma_filter_period, p.ma_filter_type)
+    if indicator_cache is not None:
+        indicator_cache[signature] = out.copy(deep=True)
     return out
 
 
@@ -477,14 +504,15 @@ def _position_units_for_direction(out: pd.DataFrame, cfg: dict, p: StrategyParam
 
 
 def run_strategy_config(df: pd.DataFrame, cfg: dict,
-                        p: StrategyParams = None) -> pd.DataFrame:
+                        p: StrategyParams = None,
+                        indicator_cache: dict | None = None) -> pd.DataFrame:
     """
     由策略 JSON 產生訊號。回傳含 long_entry / short_entry 與指標欄位的
     DataFrame，可直接餵給 backtester.run_backtest()。
     """
     if p is None:
         p = params_from_config(cfg)
-    out = add_indicator_columns(df, p)
+    out = add_indicator_columns(df, p, cfg, indicator_cache)
 
     direction = cfg.get("direction", p.direction)
     long_sig, long_reasons = evaluate_entry(out, cfg.get("entry_long"))

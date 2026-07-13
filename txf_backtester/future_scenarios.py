@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
+import gc
 
 import numpy as np
 import pandas as pd
@@ -103,10 +104,11 @@ def infer_future_days(full_daily: pd.DataFrame, items: list[tuple[str, dict]],
     """用完整歷史交易的持有期第99百分位×2決定延伸長度。"""
     tfs = {"1D": full_daily}
     holds = []
+    indicator_cache = {"1D": {}}
     for _, cfg in items:
         if required_timeframes_for_config(cfg) != {"1D"}:
             continue
-        frame, params, _ = prepare_execution_frame(tfs, cfg)
+        frame, params, _ = prepare_execution_frame(tfs, cfg, indicator_cache=indicator_cache)
         trades, _ = run_backtest(frame, cost, params)
         if trades is not None and not trades.empty and "holding_bars" in trades.columns:
             s = pd.to_numeric(trades["holding_bars"], errors="coerce").dropna()
@@ -221,17 +223,28 @@ def _cagr(value: float, initial: float, start, end) -> float:
     return (ratio ** (365.25 / days) - 1.0) * 100 if ratio > 0 else np.nan
 
 
+def _resume_key(row: dict) -> tuple:
+    return (
+        str(row.get("截止日", "")), str(row.get("未來情境", "")),
+        int(row.get("路徑編號", 0) or 0), int(row.get("seed", 0) or 0),
+        str(row.get("策略名稱", "")),
+    )
+
+
 def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict]],
                          cost: CostModel, initial_capital: float,
                          cutoff_dates: Iterable, benchmark_df: pd.DataFrame | None = None,
                          benchmark_buy_fee_rate: float = 0.001425,
                          config: ScenarioConfig | None = None,
-                         progress_callback=None) -> dict:
-    """共同截止日×六種未來狀態。
+                         progress_callback=None,
+                         resume_distribution: pd.DataFrame | None = None,
+                         checkpoint_callback=None,
+                         checkpoint_every: int = 500) -> dict:
+    """共同截止日×六種未來狀態，支援中斷後續跑。
 
-    v0.8.4 主排名改採「共同路徑期末總權益」對「00631L期末市值」。
-    未自然出場仍保留為資訊欄位，但不再要求未來必須終止，因為真實市場本來
-    就永遠有下一天。已實現損益仍作為輔助診斷。
+    v0.8.6.1：已完成的每一筆以「截止日／情境／路徑／seed／策略」識別。
+    相同設定重新執行時會略過檢查點中的結果，並以固定seed重建尚未完成的
+    共同路徑。checkpoint_callback 會收到 (rows_chunk, done, total)。
     """
     config = config or ScenarioConfig()
     for name, cfg in items:
@@ -246,85 +259,156 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
     cutoffs = [x for x in cutoffs if full_daily["trade_date"].min() < x <= full_daily["trade_date"].max()]
     if not cutoffs:
         raise ValueError("沒有可用的共同截止日")
-    total = len(cutoffs) * len(SCENARIO_STATES) * config.paths_per_state * len(items)
-    done = 0
-    rows = []
-    rng = np.random.default_rng(int(config.seed))
-    start_date = pd.Timestamp(full_daily["trade_date"].min()).normalize()
 
+    # 先建立完整任務表，seed不依執行是否中斷而改變。
+    rng = np.random.default_rng(int(config.seed))
+    tasks = []
     for cutoff in cutoffs:
-        hist = full_daily[full_daily["trade_date"] <= cutoff].copy()
-        if len(hist) < 120:
-            continue
-        last_close = float(hist["close"].iloc[-1])
-        bench_at_cutoff, benchmark_hist_dd = _benchmark_historical_value(
-            benchmark_df, start_date, cutoff, initial_capital, benchmark_buy_fee_rate)
         for state in SCENARIO_STATES:
             for path_idx in range(config.paths_per_state):
-                path_seed = int(rng.integers(1, np.iinfo(np.int32).max))
-                future, source_dates = generate_future_daily(
-                    full_daily, last_close, cutoff, state, future_days, path_seed, config.block_days,
-                    prepared_features=prepared_features, candidate_map=candidate_map)
-                combined = pd.concat([hist, future], ignore_index=True, sort=False)
-                benchmark_returns = _benchmark_future_returns(benchmark_df, source_dates, future)
-                bench_values = bench_at_cutoff * (1.0 + benchmark_returns).cumprod()
-                benchmark_end = float(bench_values.iloc[-1]) if len(bench_values) else bench_at_cutoff
-                bench_curve = pd.concat([pd.Series([bench_at_cutoff]), bench_values], ignore_index=True)
-                bench_future_peak = bench_curve.cummax()
-                bench_future_dd = ((bench_curve / bench_future_peak) - 1.0).min() * 100
-                benchmark_dd = min(float(benchmark_hist_dd), float(bench_future_dd))
-                end_date = pd.Timestamp(combined["trade_date"].iloc[-1])
-                benchmark_annual = _cagr(benchmark_end, initial_capital, start_date, end_date)
+                tasks.append((cutoff, state, path_idx, int(rng.integers(1, np.iinfo(np.int32).max))))
+    total = len(tasks) * len(items)
 
-                for name, cfg in items:
-                    frame, params, _ = prepare_execution_frame({"1D": combined}, cfg)
-                    trades, equity = run_backtest(frame, cost, params)
-                    metrics = compute_metrics(trades, equity,
-                                              margin_reference=cost.original_margin_amount,
-                                              quantity=cost.quantity,
-                                              initial_capital=initial_capital,
-                                              market_data=combined)
-                    total_pnl = float(metrics.get("總損益(元)", 0.0) or 0.0)
-                    strategy_end = float(initial_capital) + total_pnl
-                    strategy_annual = _cagr(strategy_end, initial_capital, start_date, end_date)
-                    realized_pnl = float(metrics.get("扣除期末強制平倉後損益(元)", total_pnl) or 0.0)
-                    realized_end = float(initial_capital) + realized_pnl
-                    realized_annual = _cagr(realized_end, initial_capital, start_date, end_date)
-                    strategy_dd = float(metrics.get("策略標準最大回撤率(%)", metrics.get("最大回撤(%)", np.nan)))
-                    unresolved = int(metrics.get("期末強制平倉交易數", 0) or 0) > 0
-                    asset_diff = strategy_end - benchmark_end
-                    asset_relative = ((strategy_end / benchmark_end) - 1.0) * 100.0 if benchmark_end > 0 else np.nan
-                    annual_diff = strategy_annual - benchmark_annual if pd.notna(strategy_annual) else np.nan
-                    drawdown_improvement = strategy_dd - benchmark_dd if pd.notna(strategy_dd) else np.nan
-                    beat = bool(strategy_end > benchmark_end)
-                    rows.append({
-                        "截止日": str(cutoff.date()), "未來情境": state,
-                        "路徑編號": path_idx + 1, "seed": path_seed, "策略名稱": name,
-                        "延伸交易日": future_days,
-                        "策略期末總權益(元)": round(strategy_end, 0),
-                        "正二期末資產(元)": round(benchmark_end, 0),
-                        "期末資產差(元)": round(asset_diff, 0),
-                        "期末資產相對正二(%)": round(float(asset_relative), 2) if pd.notna(asset_relative) else np.nan,
-                        "策略總權益年化報酬率(%)": round(float(strategy_annual), 2) if pd.notna(strategy_annual) else np.nan,
-                        "正二年化報酬率(%)": round(float(benchmark_annual), 2),
-                        "相對正二年化差(百分點)": round(float(annual_diff), 2) if pd.notna(annual_diff) else np.nan,
-                        "最大回撤率(%)": round(float(strategy_dd), 2) if pd.notna(strategy_dd) else np.nan,
-                        "正二最大回撤率(%)": round(float(benchmark_dd), 2),
-                        "相對正二回撤改善(百分點)": round(float(drawdown_improvement), 2) if pd.notna(drawdown_improvement) else np.nan,
-                        "期末總權益超越正二": beat,
-                        # 向下相容舊欄位；v0.8.4起語意改為期末總權益比較。
-                        "超越正二": beat,
-                        "已實現損益(元)": round(realized_pnl, 0),
-                        "已實現年化報酬率(%)": round(float(realized_annual), 2) if pd.notna(realized_annual) else np.nan,
-                        "總損益含期末浮動(元)": round(total_pnl, 0),
-                        "最大回撤(元)": metrics.get("最大回撤(元)", 0.0),
-                        "斷頭次數": metrics.get("斷頭次數", 0),
-                        "尚未自然出場": unresolved,
-                    })
-                    done += 1
-                    if progress_callback:
-                        progress_callback(done / max(total, 1),
-                                          f"情境驗證 {done}/{total}｜{cutoff.date()}｜{state}｜{name}")
+    valid_names = {str(name) for name, _ in items}
+    valid_task_keys = {
+        (str(cutoff.date()), state, path_idx + 1, seed)
+        for cutoff, state, path_idx, seed in tasks
+    }
+    rows = []
+    completed = set()
+    if resume_distribution is not None and not resume_distribution.empty:
+        # 只接受本次任務與本次策略，並去除可能因中斷重試產生的重複列。
+        for row in resume_distribution.to_dict("records"):
+            key = _resume_key(row)
+            task_key = key[:4]
+            if task_key in valid_task_keys and key[4] in valid_names and key not in completed:
+                rows.append(row)
+                completed.add(key)
+    done = len(completed)
+    pending_rows: list[dict] = []
+    checkpoint_every = max(int(checkpoint_every), 1)
+    progress_step = max(total // 200, 1)  # 最多約200次前端更新，避免大量WebSocket訊息。
+    if progress_callback:
+        progress_callback(done / max(total, 1), f"情境驗證續跑 {done}/{total}")
+
+    start_date = pd.Timestamp(full_daily["trade_date"].min()).normalize()
+    hist_cache = {}
+    benchmark_cache = {}
+    processed_paths = 0
+
+    def flush_checkpoint():
+        nonlocal pending_rows
+        if pending_rows and checkpoint_callback:
+            checkpoint_callback(list(pending_rows), done, total)
+            pending_rows = []
+
+    try:
+        for cutoff, state, path_idx, path_seed in tasks:
+            cutoff_text = str(cutoff.date())
+            if cutoff not in hist_cache:
+                hist = full_daily[full_daily["trade_date"] <= cutoff].copy()
+                if len(hist) < 120:
+                    continue
+                hist_cache[cutoff] = hist
+                benchmark_cache[cutoff] = _benchmark_historical_value(
+                    benchmark_df, start_date, cutoff, initial_capital, benchmark_buy_fee_rate)
+            hist = hist_cache[cutoff]
+            last_close = float(hist["close"].iloc[-1])
+            bench_at_cutoff, benchmark_hist_dd = benchmark_cache[cutoff]
+
+            # 若這條共同路徑的所有策略都已完成，連未來K棒也不必重建。
+            path_keys = [
+                (cutoff_text, state, path_idx + 1, path_seed, str(name))
+                for name, _ in items
+            ]
+            if all(key in completed for key in path_keys):
+                continue
+
+            future, source_dates = generate_future_daily(
+                full_daily, last_close, cutoff, state, future_days, path_seed, config.block_days,
+                prepared_features=prepared_features, candidate_map=candidate_map)
+            combined = pd.concat([hist, future], ignore_index=True, sort=False)
+            benchmark_returns = _benchmark_future_returns(benchmark_df, source_dates, future)
+            bench_values = bench_at_cutoff * (1.0 + benchmark_returns).cumprod()
+            benchmark_end = float(bench_values.iloc[-1]) if len(bench_values) else bench_at_cutoff
+            bench_curve = pd.concat([pd.Series([bench_at_cutoff]), bench_values], ignore_index=True)
+            bench_future_peak = bench_curve.cummax()
+            bench_future_dd = ((bench_curve / bench_future_peak) - 1.0).min() * 100
+            benchmark_dd = min(float(benchmark_hist_dd), float(bench_future_dd))
+            end_date = pd.Timestamp(combined["trade_date"].iloc[-1])
+            benchmark_annual = _cagr(benchmark_end, initial_capital, start_date, end_date)
+
+            indicator_cache = {"1D": {}}
+            for name, cfg in items:
+                key = (cutoff_text, state, path_idx + 1, path_seed, str(name))
+                if key in completed:
+                    continue
+                frame, params, _ = prepare_execution_frame(
+                    {"1D": combined}, cfg, indicator_cache=indicator_cache)
+                trades, equity = run_backtest(frame, cost, params)
+                metrics = compute_metrics(trades, equity,
+                                          margin_reference=cost.original_margin_amount,
+                                          quantity=cost.quantity,
+                                          initial_capital=initial_capital,
+                                          market_data=combined)
+                total_pnl = float(metrics.get("總損益(元)", 0.0) or 0.0)
+                strategy_end = float(initial_capital) + total_pnl
+                strategy_annual = _cagr(strategy_end, initial_capital, start_date, end_date)
+                realized_pnl = float(metrics.get("扣除期末強制平倉後損益(元)", total_pnl) or 0.0)
+                realized_end = float(initial_capital) + realized_pnl
+                realized_annual = _cagr(realized_end, initial_capital, start_date, end_date)
+                strategy_dd = float(metrics.get("策略標準最大回撤率(%)", metrics.get("最大回撤(%)", np.nan)))
+                unresolved = int(metrics.get("期末強制平倉交易數", 0) or 0) > 0
+                asset_diff = strategy_end - benchmark_end
+                asset_relative = ((strategy_end / benchmark_end) - 1.0) * 100.0 if benchmark_end > 0 else np.nan
+                annual_diff = strategy_annual - benchmark_annual if pd.notna(strategy_annual) else np.nan
+                drawdown_improvement = strategy_dd - benchmark_dd if pd.notna(strategy_dd) else np.nan
+                beat = bool(strategy_end > benchmark_end)
+                result_row = {
+                    "截止日": cutoff_text, "未來情境": state,
+                    "路徑編號": path_idx + 1, "seed": path_seed, "策略名稱": name,
+                    "延伸交易日": future_days,
+                    "策略期末總權益(元)": round(strategy_end, 0),
+                    "正二期末資產(元)": round(benchmark_end, 0),
+                    "期末資產差(元)": round(asset_diff, 0),
+                    "期末資產相對正二(%)": round(float(asset_relative), 2) if pd.notna(asset_relative) else np.nan,
+                    "策略總權益年化報酬率(%)": round(float(strategy_annual), 2) if pd.notna(strategy_annual) else np.nan,
+                    "正二年化報酬率(%)": round(float(benchmark_annual), 2),
+                    "相對正二年化差(百分點)": round(float(annual_diff), 2) if pd.notna(annual_diff) else np.nan,
+                    "最大回撤率(%)": round(float(strategy_dd), 2) if pd.notna(strategy_dd) else np.nan,
+                    "正二最大回撤率(%)": round(float(benchmark_dd), 2),
+                    "相對正二回撤改善(百分點)": round(float(drawdown_improvement), 2) if pd.notna(drawdown_improvement) else np.nan,
+                    "期末總權益超越正二": beat,
+                    "超越正二": beat,
+                    "已實現損益(元)": round(realized_pnl, 0),
+                    "已實現年化報酬率(%)": round(float(realized_annual), 2) if pd.notna(realized_annual) else np.nan,
+                    "總損益含期末浮動(元)": round(total_pnl, 0),
+                    "最大回撤(元)": metrics.get("最大回撤(元)", 0.0),
+                    "斷頭次數": metrics.get("斷頭次數", 0),
+                    "尚未自然出場": unresolved,
+                }
+                rows.append(result_row)
+                pending_rows.append(result_row)
+                completed.add(key)
+                done += 1
+                if len(pending_rows) >= checkpoint_every:
+                    flush_checkpoint()
+                if progress_callback and (done == total or done % progress_step == 0):
+                    progress_callback(done / max(total, 1),
+                                      f"情境驗證 {done}/{total}｜{cutoff.date()}｜{state}｜{name}")
+                del frame, trades, equity, metrics
+
+            processed_paths += 1
+            if processed_paths % 10 == 0:
+                gc.collect()
+            del future, source_dates, combined, benchmark_returns, bench_values, bench_curve, indicator_cache
+        flush_checkpoint()
+    except BaseException:
+        # 一般例外或Streamlit終止訊號發生前，盡量把尚未落盤的小批結果寫出。
+        try:
+            flush_checkpoint()
+        finally:
+            raise
     dist = pd.DataFrame(rows)
     if dist.empty:
         return {"distribution": dist, "comparison": pd.DataFrame(), "future_days": future_days}

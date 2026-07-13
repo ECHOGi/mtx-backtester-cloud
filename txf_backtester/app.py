@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.5｜SAR、BIAS、日K缺口與寶塔線研究版。
+"""MTX 台指期回測平台 v0.8.6.1｜500筆檢查點壓力測試修正版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -20,6 +20,9 @@ from backtester import CostModel
 from batch_utils import apply_position_mode, parse_strategy_batch
 from benchmark_00631l import (BENCHMARK_NAME, benchmark_metrics,
                               historical_buy_hold_curve, load_benchmark)
+from checkpointing import (append_rows as append_checkpoint_rows, checkpoint_paths,
+                           clear_checkpoint, make_signature, read_meta as read_checkpoint_meta,
+                           read_rows as read_checkpoint_rows, write_meta as write_checkpoint_meta)
 from future_scenarios import ScenarioConfig, run_cutoff_scenarios
 from config import DEFAULT_SYMBOL, SYMBOLS
 from continuous_contract import build_session_continuous
@@ -29,8 +32,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.5"
-APP_RELEASE_NAME = "SAR＋BIAS＋日K缺口＋寶塔線研究版"
+APP_VERSION = "v0.8.6.1"
+APP_RELEASE_NAME = "500筆檢查點＋20組壓力測試修正版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -493,14 +496,20 @@ with st.sidebar:
             future_paths_per_state = st.select_slider(
                 "每種未來狀態路徑數", options=[1, 2, 3, 5, 10, 15, 20], value=5,
                 help="六種未來狀態各產生相同數量的路徑。所有策略與正二共用相同來源日期與seed；正式壓力測試最多可選20條。")
+            restart_scenario_checkpoint = st.checkbox(
+                "忽略同設定的中斷進度，從頭重跑", value=False,
+                help="平常不要勾選。長回測若因瀏覽器或工作階段中斷，再按開始回測會自動接續；只有需要刻意清除舊進度時才勾選。")
+            st.caption("長回測每500筆寫入檢查點；正常結束或中斷前仍會補寫不足500筆的尾批。畫面重置後使用相同設定再按一次，即會接續已保存部分。")
         else:
             selected_cutoffs, future_paths_per_state = [], 0
+            restart_scenario_checkpoint = False
         data_error = ""
     except Exception as e:
         preview = pd.DataFrame()
         start_date = end_date = None
         data_error = str(e)
         selected_cutoffs, future_paths_per_state = [], 0
+        restart_scenario_checkpoint = False
         st.error(f"資料無法讀取：{e}")
 
     run_clicked = st.button("開始回測", type="primary", use_container_width=True, disabled=bool(data_error))
@@ -531,6 +540,39 @@ if run_clicked:
             exit_cfg["position_small_fee"] = float(fee) if symbol == "MTX" else float(SYMBOLS["MTX"]["fee"])
             exit_cfg["position_micro_fee"] = float(fee) if symbol == "TMF" else float(SYMBOLS["TMF"]["fee"])
             final_items.append((name, cfg))
+
+        checkpoint_signature = ""
+        checkpoint_rows_path = checkpoint_meta_path = None
+        resume_distribution = pd.DataFrame()
+        if research_mode.startswith("多截止日"):
+            data_dates = pd.to_datetime(filtered["trade_date"], errors="coerce")
+            checkpoint_payload = {
+                "platform": APP_VERSION,
+                "batch_name": batch_name,
+                "strategies": final_items,
+                "data_rows": int(len(filtered)),
+                "data_start": str(data_dates.min()),
+                "data_end": str(data_dates.max()),
+                "data_first_close": float(pd.to_numeric(filtered["close"], errors="coerce").iloc[0]),
+                "data_last_close": float(pd.to_numeric(filtered["close"], errors="coerce").iloc[-1]),
+                "cutoffs": [str(pd.Timestamp(x).date()) for x in selected_cutoffs],
+                "paths_per_state": int(future_paths_per_state),
+                "seed": int(base_seed),
+                "initial_capital": float(initial_capital),
+                "symbol": symbol, "fee": float(fee), "slippage": float(slippage),
+                "use_tax": bool(use_tax), "margin_check": bool(use_margin_call_check),
+                "benchmark_enabled": bool(benchmark_enabled),
+                "benchmark_source": benchmark_source if benchmark_enabled else "停用",
+                "benchmark_fee_rate": float(benchmark_fee_rate),
+            }
+            checkpoint_signature = make_signature(checkpoint_payload)
+            checkpoint_rows_path, checkpoint_meta_path = checkpoint_paths(checkpoint_signature)
+            if restart_scenario_checkpoint:
+                clear_checkpoint(checkpoint_signature)
+            resume_distribution = read_checkpoint_rows(checkpoint_rows_path)
+            if not resume_distribution.empty:
+                st.sidebar.info(
+                    f"發現同設定中斷進度：{len(resume_distribution):,}筆，將自動續跑。")
 
         seeds = [int(base_seed + i * 7919) for i in range(int(path_count))]
         spec = SYMBOLS[symbol]
@@ -590,13 +632,31 @@ if run_clicked:
         if research_mode.startswith("多截止日"):
             if not selected_cutoffs:
                 raise ValueError("多截止日模式至少需要選擇一個共同截止日")
+            def _checkpoint_callback(chunk, done, total):
+                append_checkpoint_rows(checkpoint_rows_path, chunk)
+                write_checkpoint_meta(checkpoint_meta_path, {
+                    "signature": checkpoint_signature,
+                    "batch_name": batch_name,
+                    "done": int(done), "total": int(total),
+                    "complete": bool(done >= total),
+                    "updated_at": pd.Timestamp.now().isoformat(),
+                })
+
             scenario = run_cutoff_scenarios(
                 filtered, final_items, cost, float(initial_capital), selected_cutoffs,
                 benchmark_df=benchmark_df if benchmark_enabled else None,
                 benchmark_buy_fee_rate=float(benchmark_fee_rate),
                 config=ScenarioConfig(paths_per_state=int(future_paths_per_state), seed=int(base_seed)),
-                progress_callback=lambda pct, txt: progress.progress(0.35 + pct * 0.65, text=txt))
+                progress_callback=lambda pct, txt: progress.progress(0.35 + pct * 0.65, text=txt),
+                resume_distribution=resume_distribution,
+                checkpoint_callback=_checkpoint_callback, checkpoint_every=500)
             result["scenario_analysis"] = scenario
+            write_checkpoint_meta(checkpoint_meta_path, {
+                "signature": checkpoint_signature, "batch_name": batch_name,
+                "done": int(len(scenario.get("distribution", []))),
+                "total": int(len(scenario.get("distribution", []))),
+                "complete": True, "updated_at": pd.Timestamp.now().isoformat(),
+            })
         progress.empty()
         result["run_settings"] = {
             "initial_capital": float(initial_capital),
@@ -613,11 +673,13 @@ if run_clicked:
             "scenario_cutoff_dates": [str(pd.Timestamp(x).date()) for x in selected_cutoffs],
             "scenario_paths_per_state": int(future_paths_per_state),
             "expanded_strategy_count": len(final_items),
+            "scenario_checkpoint_signature": checkpoint_signature,
+            "scenario_resume_rows_loaded": int(len(resume_distribution)),
         }
         zip_bytes = _result_zip(batch_name, raw_json, result)
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         zip_name = f"MTX_模擬回測_{stamp}_{_safe_name(batch_name)}.zip"
-        st.session_state["v085_result"] = {
+        st.session_state["v086_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
             "start": str(start_date), "end": str(end_date),
@@ -630,17 +692,17 @@ if run_clicked:
                 uploaded_info = upload_zip_result_to_drive(
                     auth_config=auth, parent_folder_id=parent,
                     result_folder_name=Path(zip_name).stem, zip_name=zip_name, zip_bytes=zip_bytes)
-                st.session_state["v085_result"]["drive_url"] = uploaded_info.get("folder_url", "")
+                st.session_state["v086_result"]["drive_url"] = uploaded_info.get("folder_url", "")
             except Exception as e:
-                st.session_state["v085_result"]["upload_error"] = str(e)
+                st.session_state["v086_result"]["upload_error"] = str(e)
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"回測失敗：{e}")
 
-state = st.session_state.get("v085_result")
+state = st.session_state.get("v086_result")
 st.markdown('''<div class="hero"><div class="eyebrow">FUTURES STRATEGY RESEARCH</div>
 <div class="title">台指期安全約束動態複利回測</div>
-<div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜SAR／BIAS／日K缺口／寶塔線｜斷頭檢查</div></div>''', unsafe_allow_html=True)
+<div class="sub">歷史回測｜未來日K情境｜00631L正二基準｜SAR／BIAS／日K缺口／寶塔線｜長回測中斷續跑｜斷頭檢查</div></div>''', unsafe_allow_html=True)
 
 with st.expander("？ 如何閱讀本頁結果", expanded=False):
     st.markdown("""
@@ -654,7 +716,9 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
 
 **00631L正二**使用實際價格與整數股數買進持有；2026年1拆22依事件調整股數與報酬，停牌缺值不當成價格為0。
 
-**v0.8.5新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
+**v0.8.5起的新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
+
+**v0.8.6.1長回測續跑**會每500筆保存一次情境結果。正常完成或可攔截的中斷會補寫最後不足500筆的尾批；若主機被強制終止，最多可能重算最近499筆。瀏覽器分頁休眠、網路中斷或工作階段重建後，以相同設定再按「開始回測」即可接續，不會從0重新計算。
 """)
 
 if not state:

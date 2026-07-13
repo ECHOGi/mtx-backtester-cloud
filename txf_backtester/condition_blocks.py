@@ -388,8 +388,17 @@ def close_breakdown_low(df, lookback=60, **_):
 
 
 # ---------- v0.8.5：SAR / BIAS / 日K缺口 / 寶塔線 ----------
+def _cached_indicator(df: pd.DataFrame, key: tuple, builder):
+    """同一策略／同一路徑內只計算一次相同參數的指標。"""
+    cache = df.attrs.setdefault("_condition_indicator_cache", {})
+    if key not in cache:
+        cache[key] = builder()
+    return cache[key]
+
 def _sar(df, af_start=0.02, af_step=0.02, af_max=0.2):
-    return ind.parabolic_sar(df, float(af_start), float(af_step), float(af_max))
+    a, step, maximum = float(af_start), float(af_step), float(af_max)
+    key = ("sar", a, step, maximum)
+    return _cached_indicator(df, key, lambda: ind.parabolic_sar(df, a, step, maximum))
 
 
 @register("sar_flip_bullish")
@@ -419,19 +428,27 @@ def sar_bearish(df, af_start=0.02, af_step=0.02, af_max=0.2, **_):
 @register("bias_above")
 def bias_above(df, value=5.0, period=20, ma_type="SMA", **_):
     """乖離率高於門檻；BIAS=(close/MA-1)×100。"""
-    return ind.bias(df["close"], int(period), str(ma_type)) > float(value)
+    n, kind = int(period), str(ma_type)
+    b = _cached_indicator(df, ("bias", n, kind.upper()),
+                          lambda: ind.bias(df["close"], n, kind))
+    return b > float(value)
 
 
 @register("bias_below")
 def bias_below(df, value=-5.0, period=20, ma_type="SMA", **_):
     """乖離率低於門檻。"""
-    return ind.bias(df["close"], int(period), str(ma_type)) < float(value)
+    n, kind = int(period), str(ma_type)
+    b = _cached_indicator(df, ("bias", n, kind.upper()),
+                          lambda: ind.bias(df["close"], n, kind))
+    return b < float(value)
 
 
 @register("bias_cross_up")
 def bias_cross_up(df, value=0.0, period=20, ma_type="SMA", **_):
     """乖離率由下往上穿越門檻。"""
-    b = ind.bias(df["close"], int(period), str(ma_type))
+    n, kind = int(period), str(ma_type)
+    b = _cached_indicator(df, ("bias", n, kind.upper()),
+                          lambda: ind.bias(df["close"], n, kind))
     v = float(value)
     return (b > v) & (b.shift(1) <= v)
 
@@ -439,7 +456,9 @@ def bias_cross_up(df, value=0.0, period=20, ma_type="SMA", **_):
 @register("bias_cross_down")
 def bias_cross_down(df, value=0.0, period=20, ma_type="SMA", **_):
     """乖離率由上往下穿越門檻。"""
-    b = ind.bias(df["close"], int(period), str(ma_type))
+    n, kind = int(period), str(ma_type)
+    b = _cached_indicator(df, ("bias", n, kind.upper()),
+                          lambda: ind.bias(df["close"], n, kind))
     v = float(value)
     return (b < v) & (b.shift(1) >= v)
 
@@ -447,61 +466,81 @@ def bias_cross_down(df, value=0.0, period=20, ma_type="SMA", **_):
 @register("open_gap_pct_above")
 def open_gap_pct_above(df, value=1.0, **_):
     """開盤相對前收的有號跳空百分比高於門檻。"""
-    return ind.open_gap_pct(df) > float(value)
+    gap = _cached_indicator(df, ("open_gap_pct",), lambda: ind.open_gap_pct(df))
+    return gap > float(value)
 
 
 @register("open_gap_pct_below")
 def open_gap_pct_below(df, value=-1.0, **_):
     """開盤相對前收的有號跳空百分比低於門檻。"""
-    return ind.open_gap_pct(df) < float(value)
+    gap = _cached_indicator(df, ("open_gap_pct",), lambda: ind.open_gap_pct(df))
+    return gap < float(value)
 
 
 @register("full_gap_up")
 def full_gap_up(df, min_gap_pct=0.0, **_):
     """當根建立向上完整缺口：low > 前一根 high。"""
-    return ind.full_gap_created(df, "up", float(min_gap_pct))
+    threshold = float(min_gap_pct)
+    return _cached_indicator(df, ("full_gap", "up", threshold),
+                             lambda: ind.full_gap_created(df, "up", threshold))
 
 
 @register("full_gap_down")
 def full_gap_down(df, min_gap_pct=0.0, **_):
     """當根建立向下完整缺口：high < 前一根 low。"""
-    return ind.full_gap_created(df, "down", float(min_gap_pct))
+    threshold = float(min_gap_pct)
+    return _cached_indicator(df, ("full_gap", "down", threshold),
+                             lambda: ind.full_gap_created(df, "down", threshold))
 
 
 @register("gap_up_unfilled")
 def gap_up_unfilled(df, min_age=5, lookback=60, min_gap_pct=0.0, **_):
     """最近 lookback 根內的向上完整缺口，至少 min_age 根仍未回補。"""
-    return ind.unfilled_gap(df, "up", min_age, lookback, min_gap_pct)["gap_up_unfilled"]
+    age, lb, threshold = int(min_age), int(lookback), float(min_gap_pct)
+    result = _cached_indicator(df, ("unfilled_gap", "up", age, lb, threshold),
+                               lambda: ind.unfilled_gap(df, "up", age, lb, threshold))
+    return result["gap_up_unfilled"]
 
 
 @register("gap_down_unfilled")
 def gap_down_unfilled(df, min_age=5, lookback=60, min_gap_pct=0.0, **_):
     """最近 lookback 根內的向下完整缺口，至少 min_age 根仍未回補。"""
-    return ind.unfilled_gap(df, "down", min_age, lookback, min_gap_pct)["gap_down_unfilled"]
+    age, lb, threshold = int(min_age), int(lookback), float(min_gap_pct)
+    result = _cached_indicator(df, ("unfilled_gap", "down", age, lb, threshold),
+                               lambda: ind.unfilled_gap(df, "down", age, lb, threshold))
+    return result["gap_down_unfilled"]
 
 
 @register("tower_flip_red")
 def tower_flip_red(df, confirm_bars=3, **_):
     """平台研究版寶塔線由黑翻紅。"""
-    return ind.tower_line(df["close"], int(confirm_bars))["tower_flip_red"]
+    bars = int(confirm_bars)
+    tower = _cached_indicator(df, ("tower", bars), lambda: ind.tower_line(df["close"], bars))
+    return tower["tower_flip_red"]
 
 
 @register("tower_flip_black")
 def tower_flip_black(df, confirm_bars=3, **_):
     """平台研究版寶塔線由紅翻黑。"""
-    return ind.tower_line(df["close"], int(confirm_bars))["tower_flip_black"]
+    bars = int(confirm_bars)
+    tower = _cached_indicator(df, ("tower", bars), lambda: ind.tower_line(df["close"], bars))
+    return tower["tower_flip_black"]
 
 
 @register("tower_red")
 def tower_red(df, confirm_bars=3, **_):
     """平台研究版寶塔線目前為紅色。"""
-    return ind.tower_line(df["close"], int(confirm_bars))["tower_color"] > 0
+    bars = int(confirm_bars)
+    tower = _cached_indicator(df, ("tower", bars), lambda: ind.tower_line(df["close"], bars))
+    return tower["tower_color"] > 0
 
 
 @register("tower_black")
 def tower_black(df, confirm_bars=3, **_):
     """平台研究版寶塔線目前為黑色。"""
-    return ind.tower_line(df["close"], int(confirm_bars))["tower_color"] < 0
+    bars = int(confirm_bars)
+    tower = _cached_indicator(df, ("tower", bars), lambda: ind.tower_line(df["close"], bars))
+    return tower["tower_color"] < 0
 
 # ---------- 組合器 ----------
 def evaluate_condition(df: pd.DataFrame, spec: dict) -> pd.Series:

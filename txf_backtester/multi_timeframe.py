@@ -141,7 +141,7 @@ def _exit_signal_frame(data: pd.DataFrame, cfg: dict, column: str) -> pd.DataFra
     return sig[["datetime", column]].copy()
 
 
-def prepare_execution_frame(timeframes: dict[str, pd.DataFrame], cfg: dict):
+def prepare_execution_frame(timeframes: dict[str, pd.DataFrame], cfg: dict, indicator_cache: dict | None = None):
     """產生可直接交給 backtester 的執行週期資料。"""
     mt = cfg.get("multi_timeframe") or {}
     enabled = bool(mt.get("enabled", False))
@@ -156,7 +156,10 @@ def prepare_execution_frame(timeframes: dict[str, pd.DataFrame], cfg: dict):
 
     params = params_from_config(cfg)
     execution_cfg = _ensure_entry_blocks(cfg)
-    base = run_strategy_config(timeframes[execution_tf].copy(), execution_cfg, params)
+    tf_cache = None
+    if indicator_cache is not None:
+        tf_cache = indicator_cache.setdefault(execution_tf, {})
+    base = run_strategy_config(timeframes[execution_tf], execution_cfg, params, indicator_cache=tf_cache)
     if not enabled:
         return base, params, {
             "enabled": False, "execution_timeframe": execution_tf,
