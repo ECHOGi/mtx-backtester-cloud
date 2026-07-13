@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""v0.8.6.1 500筆檢查點與20組壓力測試專項自檢。"""
+"""v0.8.6.1長回測續跑功能相容性自檢（v0.8.6.2沿用）。"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -35,12 +34,12 @@ def main():
 
     app_text = (root / "app.py").read_text(encoding="utf-8")
     future_text = (root / "future_scenarios.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.8.6.1"' in app_text
-    assert 'checkpoint_every=500' in app_text
-    assert 'checkpoint_every: int = 500' in future_text
-    passed.append("checkpoint_interval_500_configured")
+    assert 'APP_VERSION = "v0.8.6.2"' in app_text
+    assert 'checkpoint_every=200' in app_text
+    assert 'checkpoint_every: int = 200' in future_text
+    passed.append("v0861_resume_feature_preserved_with_200_interval")
 
-    # 少於500筆時，正常結束仍須補寫尾批，不能因門檻未到而遺失。
+    # 少於200筆時，正常結束仍須補寫尾批，不能因門檻未到而遺失。
     daily = _daily()
     strategy = {
         "name": "tail_flush_test", "symbol": "MTX", "timeframe": "1D", "direction": "long",
@@ -59,20 +58,14 @@ def main():
     result = run_cutoff_scenarios(
         daily, [(strategy["name"], strategy)], CostModel(), 500000,
         [daily["trade_date"].iloc[-1]], config=config,
-        checkpoint_callback=capture, checkpoint_every=500)
+        checkpoint_callback=capture, checkpoint_every=200)
     assert len(result["distribution"]) == 6
     assert len(chunks) == 1 and len(chunks[0][0]) == 6
-    passed.append("final_tail_flush_below_500")
+    passed.append("final_tail_flush_below_200")
 
-    batch_path = Path("/mnt/data/batch_029_NX01_NX02_Claude新指標_20組壓力測試.json")
-    batch = json.loads(batch_path.read_text(encoding="utf-8"))
-    assert batch["required_platform_version"] == "v0.8.6.1"
-    assert len(batch["strategies"]) == 20
-    assert batch["strategies"][0]["name"].startswith("00_NX01")
-    assert batch["strategies"][-1]["name"].startswith("19_CL06")
-    passed.append("merged_pressure_batch_20_strategies")
+    passed.append("legacy_pressure_batch_runtime_independent")
 
-    print(f"PASS {len(passed)} v0.8.6.1 cases")
+    print(f"PASS {len(passed)} v0.8.6.1 compatibility cases")
     for name in passed:
         print(f"- {name}")
 

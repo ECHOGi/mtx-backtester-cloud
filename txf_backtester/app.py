@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.6.1｜500筆檢查點壓力測試修正版。
+"""MTX 台指期回測平台 v0.8.6.2｜200筆檢查點與回撤煞車觀察修正版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -32,8 +32,8 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_monte_carlo
 
-APP_VERSION = "v0.8.6.1"
-APP_RELEASE_NAME = "500筆檢查點＋20組壓力測試修正版"
+APP_VERSION = "v0.8.6.2"
+APP_RELEASE_NAME = "200筆檢查點＋回撤煞車觀察修正版"
 DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID = "1KhjGNzHqPTXzIcDEM_fy0clOCZoy25Fa"
 DEFAULT_GDRIVE_STRATEGY_FOLDER_ID = "1boC1wtRriJv1SADAOZ-d9uA3KLkmqWtR"
 
@@ -281,7 +281,8 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
                        f"- 每種情境路徑數：{result.get('run_settings', {}).get('scenario_paths_per_state', '—')}",
                        f"- 正式排名口徑：{scenario.get('ranking_basis', '共同路徑期末總權益')}",
                        "- 未自然出場只表示模擬終點仍有持倉，不作為必須消除的錯誤。",
-                       f"- 情境：{', '.join(scenario.get('scenario_states', []))}"]
+                       f"- 情境：{', '.join(scenario.get('scenario_states', []))}",
+                       "- 回撤煞車觀察：完整分布與策略比較均包含觸發次數、煞車狀態交易日占比、平均與最低每日煞車倍率。"]
         readme += ["", "## 各策略部位／複利口徑"]
         for name, rep in result["representatives"].items():
             readme.append(f"- {name}：{_position_basis_text(rep['config'])}")
@@ -499,7 +500,7 @@ with st.sidebar:
             restart_scenario_checkpoint = st.checkbox(
                 "忽略同設定的中斷進度，從頭重跑", value=False,
                 help="平常不要勾選。長回測若因瀏覽器或工作階段中斷，再按開始回測會自動接續；只有需要刻意清除舊進度時才勾選。")
-            st.caption("長回測每500筆寫入檢查點；正常結束或中斷前仍會補寫不足500筆的尾批。畫面重置後使用相同設定再按一次，即會接續已保存部分。")
+            st.caption("長回測每200筆寫入檢查點；正常結束或中斷前仍會補寫不足200筆的尾批。畫面重置後使用相同設定再按一次，即會接續已保存部分。")
         else:
             selected_cutoffs, future_paths_per_state = [], 0
             restart_scenario_checkpoint = False
@@ -649,7 +650,7 @@ if run_clicked:
                 config=ScenarioConfig(paths_per_state=int(future_paths_per_state), seed=int(base_seed)),
                 progress_callback=lambda pct, txt: progress.progress(0.35 + pct * 0.65, text=txt),
                 resume_distribution=resume_distribution,
-                checkpoint_callback=_checkpoint_callback, checkpoint_every=500)
+                checkpoint_callback=_checkpoint_callback, checkpoint_every=200)
             result["scenario_analysis"] = scenario
             write_checkpoint_meta(checkpoint_meta_path, {
                 "signature": checkpoint_signature, "batch_name": batch_name,
@@ -718,7 +719,9 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
 
 **v0.8.5起的新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
 
-**v0.8.6.1長回測續跑**會每500筆保存一次情境結果。正常完成或可攔截的中斷會補寫最後不足500筆的尾批；若主機被強制終止，最多可能重算最近499筆。瀏覽器分頁休眠、網路中斷或工作階段重建後，以相同設定再按「開始回測」即可接續，不會從0重新計算。
+**v0.8.6.2長回測續跑**會每200筆保存一次情境結果。正常完成或可攔截的中斷會補寫最後不足200筆的尾批；若主機被強制終止，最多可能重算最近199筆。瀏覽器分頁休眠、網路中斷或工作階段重建後，以相同設定再按「開始回測」即可接續，不會從0重新計算。
+
+**回撤煞車觀察欄位**會在資金曲線與批次結果中記錄逐日煞車倍率、觸發次數與煞車狀態交易日占比，可用來判斷較早啟動的煞車是精準閃避尾端，還是長期常駐造成的變相降風險。
 """)
 
 if not state:
@@ -909,6 +912,10 @@ else:
             d.metric("最大有效槓桿", f"{float(m.get('最大有效槓桿(倍)', 0) or 0):.2f}倍")
             e.metric("期末強平損益", f"{float(m.get('期末強制平倉損益(元)', 0)):,.0f}")
             f.metric("斷頭次數", int(m.get("斷頭次數", 0)))
+            g, h, i = st.columns(3)
+            g.metric("煞車觸發次數", int(m.get("回撤煞車觸發次數", 0)))
+            h.metric("煞車狀態交易日占比", f"{float(m.get('煞車狀態交易日占比(%)', 0) or 0):.2f}%")
+            i.metric("平均每日煞車倍率", f"{float(m.get('平均每日回撤煞車倍率', 1) or 1):.4f}")
             eq = rep["equity"].copy()
             if not eq.empty:
                 st.plotly_chart(_equity_figure(eq, float(state.get("initial_capital", 500000))), use_container_width=True)

@@ -991,6 +991,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         if pos is not None:
             unreal = ((row["close"] - pos["entry_price"]) * pos["direction"]
                       * _position_point_value(pos, cost))
+        # v0.8.6.2：逐日記錄「下一筆新進場」會採用的回撤煞車狀態。
+        # 這裡只依已實現權益計算，與實際部位計算規則一致；不會把未實現損益
+        # 誤當成煞車依據，也不會在持倉途中變更既有口數。
+        daily_brake_multiplier, daily_realized_dd_pct, daily_realized_peak = (
+            _drawdown_risk_brake_multiplier(p, realized, realized_peak_equity)
+        )
         equity_rows.append({
             "datetime": dt,
             "equity": realized + unreal,
@@ -1002,6 +1008,10 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             "missing_atr_skipped_entries": missing_atr_skipped_entries,
             "dynamic_size_skipped_entries": dynamic_size_skipped_entries,
             "account_disabled": bool(account_disabled),
+            "daily_drawdown_brake_multiplier": round(float(daily_brake_multiplier), 6),
+            "daily_drawdown_brake_active": bool(daily_brake_multiplier < 0.999999),
+            "daily_realized_equity_drawdown_pct": round(float(daily_realized_dd_pct), 6),
+            "daily_realized_equity_peak": round(float(daily_realized_peak), 2),
         })
 
     trades_df = pd.DataFrame(trades, columns=[

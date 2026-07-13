@@ -31,6 +31,7 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     risk_cap_skips = 0
     missing_atr_skips = 0
     dynamic_size_skips = 0
+    daily_brake_metrics = {}
     if equity is not None and not equity.empty:
         if "risk_cap_skipped_entries" in equity.columns:
             risk_cap_skips = int(pd.to_numeric(equity["risk_cap_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
@@ -38,6 +39,27 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
             missing_atr_skips = int(pd.to_numeric(equity["missing_atr_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
         if "dynamic_size_skipped_entries" in equity.columns:
             dynamic_size_skips = int(pd.to_numeric(equity["dynamic_size_skipped_entries"], errors="coerce").fillna(0).iloc[-1])
+        if "daily_drawdown_brake_multiplier" in equity.columns:
+            daily_brake = pd.to_numeric(
+                equity["daily_drawdown_brake_multiplier"], errors="coerce"
+            ).dropna()
+            if len(daily_brake):
+                active = daily_brake < 0.999999
+                prior_active = active.shift(1, fill_value=False)
+                triggers = active & ~prior_active
+                daily_brake_metrics.update({
+                    "回撤煞車觸發次數": int(triggers.sum()),
+                    "煞車狀態交易日數": int(active.sum()),
+                    "煞車狀態交易日占比(%)": round(float(active.mean() * 100.0), 2),
+                    "平均每日回撤煞車倍率": round(float(daily_brake.mean()), 4),
+                    "最低每日回撤煞車倍率": round(float(daily_brake.min()), 4),
+                })
+        if "daily_realized_equity_drawdown_pct" in equity.columns:
+            daily_dd = pd.to_numeric(
+                equity["daily_realized_equity_drawdown_pct"], errors="coerce"
+            ).dropna()
+            if len(daily_dd):
+                daily_brake_metrics["逐日最大已實現權益回撤(%)"] = round(float(daily_dd.max()), 2)
     if trades is None or trades.empty:
         return {
             "交易次數": 0,
@@ -49,6 +71,7 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
             "第一次斷頭日期": "無",
             "歷史最低所需安全資金": "無交易",
             "訊息": "此參數組合沒有產生任何交易",
+            **daily_brake_metrics,
         }
 
     pnl = trades["pnl_amount"].astype(float)
@@ -78,6 +101,7 @@ def compute_metrics(trades: pd.DataFrame, equity: pd.DataFrame,
     m["風險上限跳過進場次數"] = risk_cap_skips
     m["ATR缺值跳過進場次數"] = missing_atr_skips
     m["動態部位無可用口數跳過次數"] = dynamic_size_skips
+    m.update(daily_brake_metrics)
     m["獲利次數"] = int(len(wins))
     m["虧損次數"] = int(len(losses))
     m["勝率(%)"] = round(len(wins) / len(trades) * 100, 2)

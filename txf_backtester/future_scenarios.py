@@ -239,10 +239,10 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
                          progress_callback=None,
                          resume_distribution: pd.DataFrame | None = None,
                          checkpoint_callback=None,
-                         checkpoint_every: int = 500) -> dict:
+                         checkpoint_every: int = 200) -> dict:
     """共同截止日×六種未來狀態，支援中斷後續跑。
 
-    v0.8.6.1：已完成的每一筆以「截止日／情境／路徑／seed／策略」識別。
+    v0.8.6.2：已完成的每一筆以「截止日／情境／路徑／seed／策略」識別。
     相同設定重新執行時會略過檢查點中的結果，並以固定seed重建尚未完成的
     共同路徑。checkpoint_callback 會收到 (rows_chunk, done, total)。
     """
@@ -386,6 +386,11 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
                     "最大回撤(元)": metrics.get("最大回撤(元)", 0.0),
                     "斷頭次數": metrics.get("斷頭次數", 0),
                     "尚未自然出場": unresolved,
+                    "回撤煞車觸發次數": metrics.get("回撤煞車觸發次數", 0),
+                    "煞車狀態交易日數": metrics.get("煞車狀態交易日數", 0),
+                    "煞車狀態交易日占比(%)": metrics.get("煞車狀態交易日占比(%)", 0.0),
+                    "平均每日回撤煞車倍率": metrics.get("平均每日回撤煞車倍率", 1.0),
+                    "最低每日回撤煞車倍率": metrics.get("最低每日回撤煞車倍率", 1.0),
                 }
                 rows.append(result_row)
                 pending_rows.append(result_row)
@@ -425,6 +430,11 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
         bench_dd = pd.to_numeric(grp["正二最大回撤率(%)"], errors="coerce")
         dd_improve = pd.to_numeric(grp["相對正二回撤改善(百分點)"], errors="coerce")
         realized_pnl = pd.to_numeric(grp["已實現損益(元)"], errors="coerce")
+        brake_triggers = pd.to_numeric(grp["回撤煞車觸發次數"], errors="coerce")
+        brake_days = pd.to_numeric(grp["煞車狀態交易日數"], errors="coerce")
+        brake_share = pd.to_numeric(grp["煞車狀態交易日占比(%)"], errors="coerce")
+        brake_avg = pd.to_numeric(grp["平均每日回撤煞車倍率"], errors="coerce")
+        brake_min = pd.to_numeric(grp["最低每日回撤煞車倍率"], errors="coerce")
         summaries.append({
             "策略名稱": name,
             "情境路徑數": len(grp),
@@ -454,6 +464,11 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
             "已實現年化中位數(%)": round(float(pd.to_numeric(grp["已實現年化報酬率(%)"], errors="coerce").median()), 2),
             "最大回撤率中位數(%)": round(float(dd.median()), 2),
             "最差最大回撤率(%)": round(float(dd.min()), 2),
+            "煞車觸發次數中位數": round(float(brake_triggers.median()), 1),
+            "煞車狀態交易日數中位數": round(float(brake_days.median()), 1),
+            "煞車狀態交易日占比中位數(%)": round(float(brake_share.median()), 2),
+            "平均每日回撤煞車倍率中位數": round(float(brake_avg.median()), 4),
+            "最低每日回撤煞車倍率中位數": round(float(brake_min.median()), 4),
         })
     compare = pd.DataFrame(summaries).sort_values(
         ["期末總權益超越正二比例(%)", "相對正二年化差中位數(百分點)", "期末資產差P10"],
@@ -469,7 +484,14 @@ def run_cutoff_scenarios(session_bars: pd.DataFrame, items: list[tuple[str, dict
         期末總權益超越正二比例=("期末總權益超越正二", "mean"),
         斷頭比例=("斷頭次數", lambda x: (pd.to_numeric(x, errors="coerce") > 0).mean()),
         尚未自然出場比例=("尚未自然出場", "mean"),
+        煞車觸發次數中位數=("回撤煞車觸發次數", "median"),
+        煞車狀態交易日占比中位數百分比=("煞車狀態交易日占比(%)", "median"),
+        平均每日回撤煞車倍率中位數=("平均每日回撤煞車倍率", "median"),
+        最低每日回撤煞車倍率中位數=("最低每日回撤煞車倍率", "median"),
     )
+    state_summary = state_summary.rename(columns={
+        "煞車狀態交易日占比中位數百分比": "煞車狀態交易日占比中位數(%)"
+    })
     for col in ("期末總權益超越正二比例", "斷頭比例", "尚未自然出場比例"):
         state_summary[col] = (state_summary[col] * 100).round(2)
     numeric_cols = [c for c in state_summary.columns if c not in {"策略名稱", "未來情境",
