@@ -17,8 +17,8 @@ def main() -> None:
     info = json.loads((root / "version.json").read_text(encoding="utf-8"))
     passed = []
 
-    assert info["version"] == "v0.8.6.4"
-    assert info["build_id"] == "20260714-2"
+    assert info["version"] in {"v0.8.6.4", "v0.8.6.5"}
+    assert info["build_id"] in {"20260714-2", "20260714-3"}
     passed.append("version_updated")
 
     # 完成回測後不得再用完整檢查點續跑。

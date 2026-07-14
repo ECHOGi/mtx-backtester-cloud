@@ -164,6 +164,13 @@ def macd_hist_cross_down(df, fast=12, slow=26, signal=9, **_):
     return (h < 0) & (h.shift(1) >= 0)
 
 
+@register("macd_hist_rising")
+def macd_hist_rising(df, fast=12, slow=26, signal=9, **_):
+    """MACD 柱狀體本根高於前一根；不限制正負值。"""
+    h = _macd(df, fast, slow, signal)["macd_hist"]
+    return h > h.shift(1)
+
+
 @register("macd_dif_cross_up")
 def macd_dif_cross_up(df, fast=12, slow=26, signal=9, **_):
     """DIF 上穿訊號線(DEA)"""
@@ -548,12 +555,13 @@ def evaluate_condition(df: pd.DataFrame, spec: dict) -> pd.Series:
 
     v0.7.0 另支援可巢狀的通用條件：
     - all_recent：指定條件連續 bars 根皆成立
+    - all_recent_trigger：指定條件首次達成連續 bars 根時觸發一次
     - any_recent：指定條件最近 bars 根至少成立一次
     - not：反向條件
     """
     spec = dict(spec or {})
     ctype = spec.pop("type", None)
-    if ctype in {"all_recent", "any_recent", "not"}:
+    if ctype in {"all_recent", "all_recent_trigger", "any_recent", "not"}:
         inner = spec.get("condition") or spec.get("inner")
         if not isinstance(inner, dict):
             raise ValueError(f"{ctype} 需要 condition 物件。")
@@ -564,9 +572,12 @@ def evaluate_condition(df: pd.DataFrame, spec: dict) -> pd.Series:
         count = base.astype(int).rolling(bars, min_periods=bars).sum()
         if ctype == "all_recent":
             return (count >= bars).fillna(False)
+        if ctype == "all_recent_trigger":
+            state = (count >= bars).fillna(False)
+            return (state & ~state.shift(1, fill_value=False)).fillna(False)
         return (count >= 1).fillna(False)
     if ctype not in CONDITIONS:
-        extras = ["all_recent", "any_recent", "not"]
+        extras = ["all_recent", "all_recent_trigger", "any_recent", "not"]
         raise ValueError(
             f"未知條件 '{ctype}'。可用條件：{sorted(CONDITIONS.keys()) + extras}")
     return CONDITIONS[ctype](df, **spec).fillna(False)
