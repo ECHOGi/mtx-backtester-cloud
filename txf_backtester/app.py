@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.6.3｜部署版本顯示修正版。
+"""MTX 台指期回測平台 v0.8.6.4｜長回測結案狀態修正版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -21,8 +21,8 @@ from batch_utils import apply_position_mode, parse_strategy_batch
 from benchmark_00631l import (BENCHMARK_NAME, benchmark_metrics,
                               historical_buy_hold_curve, load_benchmark)
 from checkpointing import (append_rows as append_checkpoint_rows, checkpoint_paths,
-                           clear_checkpoint, make_signature, read_meta as read_checkpoint_meta,
-                           read_rows as read_checkpoint_rows, write_meta as write_checkpoint_meta)
+                           clear_checkpoint, make_signature, prepare_resume,
+                           read_meta as read_checkpoint_meta, write_meta as write_checkpoint_meta)
 from future_scenarios import ScenarioConfig, run_cutoff_scenarios
 from config import DEFAULT_SYMBOL, SYMBOLS
 from continuous_contract import build_session_continuous
@@ -33,9 +33,9 @@ from google_drive_uploader import (download_drive_file_bytes,
 from monte_carlo_batch import run_batch_monte_carlo
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.6.3",
-    "release_name": "部署版本顯示＋200筆檢查點修正版",
-    "build_id": "20260714-1",
+    "version": "v0.8.6.4",
+    "release_name": "長回測結案狀態＋策略選檔修正版",
+    "build_id": "20260714-2",
 }
 try:
     _version_info = json.loads((Path(__file__).resolve().parent / "version.json").read_text(encoding="utf-8"))
@@ -395,11 +395,21 @@ with st.sidebar:
         try:
             files = _cloud_files(json.dumps(auth, ensure_ascii=False), folder_id)
             if files:
-                pick = st.selectbox("策略檔", range(len(files)), format_func=lambda i: files[i]["name"], key="drive_strategy_pick")
-                display_name = files[pick]["name"]
-                selected_drive_id = files[pick]["id"]
+                file_map = {str(item["id"]): str(item["name"]) for item in files}
+                selected_drive_id = st.selectbox(
+                    "策略檔", options=list(file_map),
+                    format_func=lambda file_id: file_map.get(str(file_id), str(file_id)),
+                    key="drive_strategy_file_id_v0864")
+                display_name = file_map.get(str(selected_drive_id), "")
+                st.caption(f"目前選擇：{display_name}")
+                if st.button("重新整理策略清單", key="refresh_drive_strategy_list", use_container_width=True):
+                    _cloud_files.clear()
+                    st.rerun()
             else:
                 st.caption("投放箱沒有 JSON")
+                if st.button("重新整理策略清單", key="refresh_empty_drive_strategy_list", use_container_width=True):
+                    _cloud_files.clear()
+                    st.rerun()
         except Exception as e:
             st.warning(f"投放箱讀取失敗：{e}")
     elif source == "上傳 JSON":
@@ -526,6 +536,12 @@ with st.sidebar:
     run_clicked = st.button("開始回測", type="primary", use_container_width=True, disabled=bool(data_error))
 
 if run_clicked:
+    st.session_state["v086_run_status"] = "running"
+    st.session_state.pop("v086_result", None)
+    progress = None
+    active_checkpoint_signature = ""
+    active_checkpoint_meta_path = None
+    active_batch_name = ""
     try:
         if source == "Google Drive 投放箱":
             if not selected_drive_id:
@@ -534,6 +550,8 @@ if run_clicked:
         if not raw_json.strip():
             raise ValueError("尚未載入策略 JSON")
         batch_name, items, batch_meta = parse_strategy_batch(raw_json, symbol=symbol)
+        active_batch_name = batch_name
+        st.sidebar.caption(f"執行中批次：{batch_name}")
         filtered = preview[(pd.to_datetime(preview["trade_date"]).dt.date >= start_date) &
                            (pd.to_datetime(preview["trade_date"]).dt.date <= end_date)].reset_index(drop=True)
         if len(filtered) < 40:
@@ -578,12 +596,21 @@ if run_clicked:
             }
             checkpoint_signature = make_signature(checkpoint_payload)
             checkpoint_rows_path, checkpoint_meta_path = checkpoint_paths(checkpoint_signature)
-            if restart_scenario_checkpoint:
-                clear_checkpoint(checkpoint_signature)
-            resume_distribution = read_checkpoint_rows(checkpoint_rows_path)
+            active_checkpoint_signature = checkpoint_signature
+            active_checkpoint_meta_path = checkpoint_meta_path
+            resume_distribution, checkpoint_meta, cleared_completed_checkpoint = prepare_resume(
+                checkpoint_signature, restart=bool(restart_scenario_checkpoint))
+            if cleared_completed_checkpoint:
+                st.sidebar.caption("已清除上一批完整檢查點，這次將建立新的回測工作。")
             if not resume_distribution.empty:
                 st.sidebar.info(
                     f"發現同設定中斷進度：{len(resume_distribution):,}筆，將自動續跑。")
+            write_checkpoint_meta(checkpoint_meta_path, {
+                "signature": checkpoint_signature, "batch_name": batch_name,
+                "done": int(len(resume_distribution)), "total": None,
+                "complete": False, "status": "running",
+                "updated_at": pd.Timestamp.now().isoformat(),
+            })
 
         seeds = [int(base_seed + i * 7919) for i in range(int(path_count))]
         spec = SYMBOLS[symbol]
@@ -650,6 +677,7 @@ if run_clicked:
                     "batch_name": batch_name,
                     "done": int(done), "total": int(total),
                     "complete": bool(done >= total),
+                    "status": "complete" if done >= total else "running",
                     "updated_at": pd.Timestamp.now().isoformat(),
                 })
 
@@ -666,9 +694,9 @@ if run_clicked:
                 "signature": checkpoint_signature, "batch_name": batch_name,
                 "done": int(len(scenario.get("distribution", []))),
                 "total": int(len(scenario.get("distribution", []))),
-                "complete": True, "updated_at": pd.Timestamp.now().isoformat(),
+                "complete": True, "status": "complete",
+                "updated_at": pd.Timestamp.now().isoformat(),
             })
-        progress.empty()
         result["run_settings"] = {
             "initial_capital": float(initial_capital),
             "use_margin_call_check": bool(use_margin_call_check),
@@ -706,9 +734,25 @@ if run_clicked:
                 st.session_state["v086_result"]["drive_url"] = uploaded_info.get("folder_url", "")
             except Exception as e:
                 st.session_state["v086_result"]["upload_error"] = str(e)
-        st.rerun()
+        st.session_state["v086_run_status"] = "complete"
+        # 結果已封裝完成後，檢查點即完成使命；不保留成下一次的「中斷進度」。
+        if checkpoint_signature:
+            clear_checkpoint(checkpoint_signature)
     except Exception as e:
+        st.session_state["v086_run_status"] = "failed"
+        if active_checkpoint_meta_path is not None:
+            previous_meta = read_checkpoint_meta(active_checkpoint_meta_path)
+            previous_meta.update({
+                "signature": active_checkpoint_signature,
+                "batch_name": active_batch_name,
+                "complete": False, "status": "interrupted",
+                "error": str(e), "updated_at": pd.Timestamp.now().isoformat(),
+            })
+            write_checkpoint_meta(active_checkpoint_meta_path, previous_meta)
         st.sidebar.error(f"回測失敗：{e}")
+    finally:
+        if progress is not None:
+            progress.empty()
 
 state = st.session_state.get("v086_result")
 st.markdown('''<div class="hero"><div class="eyebrow">FUTURES STRATEGY RESEARCH</div>
@@ -729,7 +773,7 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
 
 **v0.8.5起的新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
 
-**v0.8.6.3長回測續跑**會每200筆保存一次情境結果。正常完成或可攔截的中斷會補寫最後不足200筆的尾批；若主機被強制終止，最多可能重算最近199筆。瀏覽器分頁休眠、網路中斷或工作階段重建後，以相同設定再按「開始回測」即可接續，不會從0重新計算。
+**v0.8.6.4長回測續跑**會每200筆保存一次情境結果；若主機被強制終止，最多可能重算最近199筆。只有未完成的檢查點才會自動續跑；完整完成並封裝結果後會立即結案清除，不會在下一批被誤認為仍在執行。完成後不再自動重新執行整頁，避免大型結果頁持續閃跳。
 
 **回撤煞車觀察欄位**會在資金曲線與批次結果中記錄逐日煞車倍率、觸發次數與煞車狀態交易日占比，可用來判斷較早啟動的煞車是精準閃避尾端，還是長期常駐造成的變相降風險。
 """)

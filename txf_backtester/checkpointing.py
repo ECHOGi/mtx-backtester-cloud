@@ -94,3 +94,21 @@ def clear_checkpoint(signature: str) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def prepare_resume(signature: str, restart: bool = False) -> tuple[pd.DataFrame, dict, bool]:
+    """準備續跑資料。
+
+    只允許未完成檢查點續跑。若meta已標記完成，代表上一批已結案，
+    會自動清除rows/meta並回傳空資料，避免完成批次被誤認為中斷進度。
+    回傳：(rows, meta, cleared_completed_checkpoint)。
+    """
+    rows_path, meta_path = checkpoint_paths(signature)
+    if restart:
+        clear_checkpoint(signature)
+    meta = read_meta(meta_path)
+    completed = bool(meta.get("complete")) or str(meta.get("status", "")).lower() == "complete"
+    if completed:
+        clear_checkpoint(signature)
+        return pd.DataFrame(), {}, True
+    return read_rows(rows_path), meta, False

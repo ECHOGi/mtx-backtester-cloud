@@ -34,7 +34,7 @@ def main():
 
     app_text = (root / "app.py").read_text(encoding="utf-8")
     future_text = (root / "future_scenarios.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.8.6.2"' in app_text
+    assert 'version.json' in app_text and 'APP_BUILD_ID' in app_text
     assert 'checkpoint_every=200' in app_text
     assert 'checkpoint_every: int = 200' in future_text
     passed.append("v0861_resume_feature_preserved_with_200_interval")
