@@ -56,6 +56,28 @@ def _directional_params(p, direction: str):
     return SimpleNamespace(**base)
 
 
+def _entry_group_params(p, direction: str, group_index: int | None):
+    """在方向別設定之上，再套用實際進場 OR 組合的出場覆寫。
+
+    group_index 為 None 或未設定覆寫時，與 v0.8.6.7 完全相同。
+    JSON 物件鍵一律是字串，因此同時接受 int/str 查找。
+    """
+    directional = _directional_params(p, direction)
+    base = dict(vars(directional)) if hasattr(directional, "__dict__") else {}
+    all_overrides = getattr(directional, "entry_group_exit_overrides", {}) or {}
+    if not isinstance(all_overrides, dict) or group_index is None:
+        return SimpleNamespace(**base)
+    overrides = all_overrides.get(str(int(group_index)))
+    if overrides is None:
+        overrides = all_overrides.get(int(group_index))
+    if isinstance(overrides, dict):
+        # 禁止覆寫群組映射本身，避免遞迴或污染後續持倉。
+        overrides = {k: v for k, v in overrides.items()
+                     if k != "entry_group_exit_overrides"}
+        base.update(overrides)
+    return SimpleNamespace(**base)
+
+
 def _entry_reason(row: pd.Series, direction: str) -> str:
     """從策略訊號列取出進場條件說明；若舊策略沒有 reasons 欄，仍可相容。"""
     col = "long_entry_reasons" if direction == "long" else "short_entry_reasons"
@@ -642,7 +664,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         # ---- 1) 執行前一根收盤的進場訊號：本根開盤進場 ----
         if pos is None and pending is not None:
             d = 1 if pending["direction"] == "long" else -1
-            entry_p = _directional_params(p, pending["direction"])
+            entry_p = _entry_group_params(
+                p, pending["direction"], pending.get("entry_group_index"))
             entry_price = row["open"] + d * cost.slippage_points  # 不利方向滑價
             entry_atr = pending.get("signal_atr")
             planned_stop_points = (_stop_distance_points(entry_p, entry_atr)
@@ -759,7 +782,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         exit_price, exit_reason = None, None
         if pos is not None:
             d, ep = pos["direction"], pos["entry_price"]
-            active_p = _directional_params(p, "long" if d == 1 else "short")
+            active_p = _entry_group_params(
+                p, "long" if d == 1 else "short", pos.get("entry_group_index"))
             pos["max_adverse_points"] = max(
                 float(pos.get("max_adverse_points", 0.0)),
                 _adverse_points(ep, d, row),
@@ -1068,7 +1092,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 # 舊策略沒有群組欄時，維持原行為；新策略則取第一個未鎖定組合。
                 if not triggered_groups or allowed_groups:
                     chosen_group = allowed_groups[0] if allowed_groups else None
-                    pending_p = _directional_params(p, "long")
+                    pending_p = _entry_group_params(p, "long", chosen_group)
                     pending = {
                         "direction": "long",
                         "signal_i": i,
@@ -1082,9 +1106,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     }
                     long_accepted = True
             if not long_accepted and bool(row["short_entry"]):
-                pending_p = _directional_params(p, "short")
                 short_groups = _triggered_entry_groups(row, "short")
                 chosen_group = short_groups[0] if short_groups else None
+                pending_p = _entry_group_params(p, "short", chosen_group)
                 pending = {
                     "direction": "short",
                     "signal_i": i,

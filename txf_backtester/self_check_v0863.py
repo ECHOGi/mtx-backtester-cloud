@@ -10,7 +10,7 @@ def main() -> None:
     root = Path(__file__).resolve().parent
     info = json.loads((root / "version.json").read_text(encoding="utf-8"))
     app_text = (root / "app.py").read_text(encoding="utf-8")
-    assert info["version"] in {"v0.8.6.3", "v0.8.6.4", "v0.8.6.5", "v0.8.6.6", "v0.8.6.7"}
+    assert info["version"] in {"v0.8.6.3", "v0.8.6.4", "v0.8.6.5", "v0.8.6.6", "v0.8.6.7", "v0.8.6.8"}
     assert str(info["build_id"]).startswith("20260714-")
     assert "APP_BUILD_ID" in app_text
     assert "建置：{APP_BUILD_ID}" in app_text

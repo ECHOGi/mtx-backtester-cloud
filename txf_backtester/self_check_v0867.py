@@ -42,8 +42,8 @@ def _base_params():
 def main():
     root = Path(__file__).resolve().parent
     info = json.loads((root / "version.json").read_text(encoding="utf-8"))
-    assert info["version"] == "v0.8.6.7"
-    assert info["build_id"] == "20260714-5"
+    assert info["version"] in {"v0.8.6.7", "v0.8.6.8"}
+    assert info["build_id"] in {"20260714-5", "20260714-6"}
 
     cost = CostModel(point_value=1.0, fee=0.0, slippage_points=0.0,
                      tax_rate=0.0, quantity=1)

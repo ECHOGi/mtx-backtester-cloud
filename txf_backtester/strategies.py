@@ -160,6 +160,12 @@ class StrategyParams:
     time_invalid_exit_bars: int = 5
     time_invalid_max_favorable_atr_multiple: float = 0.5
     time_invalid_require_losing_close: bool = True
+    # v0.8.6.8：依實際進場 OR 組合編號覆寫出場／部位風險參數。
+    # JSON 範例：{"2": {"use_time_invalid_exit": true},
+    #              "3": {"stop_atr_multiple": 1.25,
+    #                      "position_sizing_reference_atr_multiple": 1.25}}
+    # 未列出的組合完全沿用共用 exit，避免影響舊策略。
+    entry_group_exit_overrides: dict = field(default_factory=dict)
     # v0.7.0：長期持有控制。固定停損與斷頭不受最短持有期限制。
     minimum_holding_bars: int = 0
     chandelier_exit_confirmation_bars: int = 1
@@ -203,6 +209,18 @@ class StrategyParams:
             clean["bollinger_reentry_long_group_indices"] = tuple(
                 int(x) for x in clean["bollinger_reentry_long_group_indices"]
             )
+        if "entry_group_exit_overrides" in clean:
+            raw = clean.get("entry_group_exit_overrides") or {}
+            normalized = {}
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    try:
+                        group_key = str(int(key))
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(value, dict):
+                        normalized[group_key] = dict(value)
+            clean["entry_group_exit_overrides"] = normalized
         return cls(**clean)
 
 
@@ -242,6 +260,7 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_time_invalid_exit", "time_invalid_exit_bars",
                "time_invalid_max_favorable_atr_multiple",
                "time_invalid_require_losing_close",
+               "entry_group_exit_overrides",
                "minimum_holding_bars",
                "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
                "signal_exit_confirmation_bars",

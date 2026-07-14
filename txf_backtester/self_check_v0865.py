@@ -27,8 +27,8 @@ def main() -> None:
     info = json.loads((root / "version.json").read_text(encoding="utf-8"))
     passed = []
 
-    assert info["version"] in {"v0.8.6.5", "v0.8.6.6", "v0.8.6.7"}
-    assert info["build_id"] in {"20260714-3", "20260714-4", "20260714-5"}
+    assert info["version"] in {"v0.8.6.5", "v0.8.6.6", "v0.8.6.7", "v0.8.6.8"}
+    assert info["build_id"] in {"20260714-3", "20260714-4", "20260714-5", "20260714-6"}
     passed.append("version_updated")
 
     # 直接用可控布林/ MACD序列測試 wrapper 事件語意，避免指標暖機干擾。

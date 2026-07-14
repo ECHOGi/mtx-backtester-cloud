@@ -12,6 +12,7 @@ correctness.py - 回測正確性檢查工具。
 from __future__ import annotations
 
 from dataclasses import asdict
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -29,6 +30,32 @@ def _get_dt(df: pd.DataFrame, idx: int):
 
 def _direction_value(direction: str) -> int:
     return 1 if direction == "long" else -1
+
+
+def _entry_group_params(p: Any, direction: str, group_index) -> Any:
+    """重現 backtester 的方向別＋入口組合出場覆寫。"""
+    base = dict(vars(p)) if hasattr(p, "__dict__") else {}
+    directional_key = ("long_exit_overrides" if str(direction).lower() == "long"
+                       else "short_exit_overrides")
+    directional = getattr(p, directional_key, {}) or {}
+    if isinstance(directional, dict):
+        base.update(directional)
+    all_overrides = base.get("entry_group_exit_overrides", {}) or {}
+    try:
+        group_key = str(int(group_index))
+    except (TypeError, ValueError):
+        group_key = None
+    if group_key is not None and isinstance(all_overrides, dict):
+        override = all_overrides.get(group_key)
+        if override is None:
+            try:
+                override = all_overrides.get(int(group_key))
+            except (TypeError, ValueError):
+                override = None
+        if isinstance(override, dict):
+            base.update({k: v for k, v in override.items()
+                         if k != "entry_group_exit_overrides"})
+    return SimpleNamespace(**base)
 
 
 def _margin_call_line(entry_price: float, direction: int, cost: CostModel, p: Any = None) -> float | None:
@@ -347,7 +374,10 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
              abs(actual_entry_atr - expected_entry_atr) < ROUND_TOL),
             f"actual={actual_entry_atr}, expected_signal_bar_atr={expected_entry_atr}")
 
-        expected_exit = _expected_exit(df, ent_i, t["direction"], float(t["entry_price"]), cost, p)
+        trade_p = _entry_group_params(
+            p, t["direction"], t.get("entry_group_index"))
+        expected_exit = _expected_exit(
+            df, ent_i, t["direction"], float(t["entry_price"]), cost, trade_p)
         add("exit_bar_index", exit_i == expected_exit["exit_bar_index"],
             f"actual={exit_i}, expected={expected_exit['exit_bar_index']}")
         add("exit_reason", t["exit_reason"] == expected_exit["exit_reason"],
@@ -364,9 +394,9 @@ def validate_trades(df: pd.DataFrame, trades: pd.DataFrame,
             small_qty = int(t.get("small_quantity", 0) or 0)
             micro_qty = int(t.get("micro_quantity", 0) or 0)
             if str(t.get("position_sizing_mode", "fixed")) != "fixed":
-                fee_per_side = (large_qty * float(getattr(p, "position_large_fee", 50.0))
-                                + small_qty * float(getattr(p, "position_small_fee", 20.0))
-                                + micro_qty * float(getattr(p, "position_micro_fee", 12.0)))
+                fee_per_side = (large_qty * float(getattr(trade_p, "position_large_fee", 50.0))
+                                + small_qty * float(getattr(trade_p, "position_small_fee", 20.0))
+                                + micro_qty * float(getattr(trade_p, "position_micro_fee", 12.0)))
             else:
                 fee_per_side = float(cost.fee) * int(cost.quantity)
         else:
