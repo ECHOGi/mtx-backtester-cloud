@@ -65,6 +65,33 @@ def _entry_reason(row: pd.Series, direction: str) -> str:
     return str(reason)
 
 
+
+def _triggered_entry_groups(row: pd.Series, direction: str) -> list[int]:
+    """取得當根實際成立的 OR 組合編號。舊資料沒有群組欄位時回傳空清單。"""
+    prefix = "long_entry_group_" if direction == "long" else "short_entry_group_"
+    groups = []
+    for col in row.index:
+        name = str(col)
+        if not name.startswith(prefix) or "reason" in name:
+            continue
+        try:
+            idx = int(name[len(prefix):])
+        except ValueError:
+            continue
+        if bool(row.get(col, False)):
+            groups.append(idx)
+    return sorted(groups)
+
+
+def _entry_reason_for_group(row: pd.Series, direction: str, group_index: int | None) -> str:
+    if group_index is None:
+        return _entry_reason(row, direction)
+    col = f"{direction}_entry_group_reason_{int(group_index)}"
+    reason = row.get(col, "")
+    if pd.isna(reason) or str(reason).strip() == "":
+        return _entry_reason(row, direction)
+    return str(reason)
+
 def _margin_call_line(entry_price: float, direction: int, cost: CostModel,
                       pos: dict | None = None, realized: float = 0.0, p=None) -> float | None:
     """回傳斷頭判斷價格。
@@ -591,10 +618,26 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     dynamic_size_skipped_entries = 0
     last_entry_units = 0
     account_disabled = False
+    bollinger_reentry_locked = False
+    bollinger_reentry_lock_start_i = None
+    bollinger_reentry_lock_activations = 0
+    bollinger_reentry_blocked_signals = 0
+    reset_groups = {int(x) for x in (getattr(
+        p, "bollinger_reentry_long_group_indices", ()) or ())}
+    use_bollinger_reset = bool(getattr(
+        p, "use_bollinger_reentry_reset_after_fixed_stop", False)) and bool(reset_groups)
 
     for i in range(n):
         row = df.iloc[i]
         dt = row["datetime"]
+
+        # v0.8.6.6：布林入口固定停損後，必須等「出場後」新的下軌跌破事件才解鎖。
+        if (use_bollinger_reset and bollinger_reentry_locked
+                and bollinger_reentry_lock_start_i is not None
+                and i > bollinger_reentry_lock_start_i
+                and bool(row.get("bollinger_reentry_reset_long", False))):
+            bollinger_reentry_locked = False
+            bollinger_reentry_lock_start_i = None
 
         # ---- 1) 執行前一根收盤的進場訊號：本根開盤進場 ----
         if pos is None and pending is not None:
@@ -667,6 +710,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "signal_i": pending["signal_i"],
                     "signal_date": pending["signal_date"],
                     "entry_reason": pending["entry_reason"],
+                    "entry_group_index": pending.get("entry_group_index"),
                     "position_regime": pending.get("position_regime", "fixed"),
                     "requested_micro_units": pending.get("target_micro_units"),
                     # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
@@ -905,6 +949,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "holding_bars": i - pos["entry_i"] + 1,
                 "exit_reason": exit_reason,
                 "entry_reason": pos["entry_reason"],
+                "entry_group_index": int(pos.get("entry_group_index"))
+                    if pos.get("entry_group_index") is not None else None,
                 "max_adverse_points": round(max_adverse_points, 2),
                 "max_adverse_amount": round(max_adverse_amount, 1),
                 "max_favorable_points": round(max_favorable_points, 2),
@@ -940,6 +986,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             })
             realized += amount
             realized_peak_equity = max(realized_peak_equity, initial_sizing_capital + realized)
+            if (use_bollinger_reset and exit_reason == "fixed_stop"
+                    and pos.get("direction") == 1
+                    and pos.get("entry_group_index") in reset_groups):
+                bollinger_reentry_locked = True
+                bollinger_reentry_lock_start_i = i
+                bollinger_reentry_lock_activations += 1
             if exit_reason == "margin_call" and bool(getattr(active_p, "stop_trading_after_margin_call", True)):
                 account_disabled = True
                 pending = None
@@ -947,25 +999,40 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
 
         # ---- 4) 收盤訊號 -> 下一根開盤進場（空手且帳戶未停用才接單）----
         if not account_disabled and pos is None and pending is None and i < n - 1:
+            long_accepted = False
             if bool(row["long_entry"]):
-                pending_p = _directional_params(p, "long")
-                pending = {
-                    "direction": "long",
-                    "signal_i": i,
-                    "signal_date": dt,
-                    "entry_reason": _entry_reason(row, "long"),
-                    "signal_atr": _positive_float(row.get("long_entry_atr", row.get("atr"))),
-                    "target_micro_units": int(row.get("long_position_micro_units", 0) or 0)
-                        if getattr(pending_p, "use_regime_position_sizing", False) else None,
-                    "position_regime": str(row.get("long_position_regime", "fixed")),
-                }
-            elif bool(row["short_entry"]):
+                triggered_groups = _triggered_entry_groups(row, "long")
+                allowed_groups = triggered_groups
+                if use_bollinger_reset and bollinger_reentry_locked:
+                    allowed_groups = [g for g in triggered_groups if g not in reset_groups]
+                    if triggered_groups and not allowed_groups:
+                        bollinger_reentry_blocked_signals += 1
+                # 舊策略沒有群組欄時，維持原行為；新策略則取第一個未鎖定組合。
+                if not triggered_groups or allowed_groups:
+                    chosen_group = allowed_groups[0] if allowed_groups else None
+                    pending_p = _directional_params(p, "long")
+                    pending = {
+                        "direction": "long",
+                        "signal_i": i,
+                        "signal_date": dt,
+                        "entry_reason": _entry_reason_for_group(row, "long", chosen_group),
+                        "entry_group_index": chosen_group,
+                        "signal_atr": _positive_float(row.get("long_entry_atr", row.get("atr"))),
+                        "target_micro_units": int(row.get("long_position_micro_units", 0) or 0)
+                            if getattr(pending_p, "use_regime_position_sizing", False) else None,
+                        "position_regime": str(row.get("long_position_regime", "fixed")),
+                    }
+                    long_accepted = True
+            if not long_accepted and bool(row["short_entry"]):
                 pending_p = _directional_params(p, "short")
+                short_groups = _triggered_entry_groups(row, "short")
+                chosen_group = short_groups[0] if short_groups else None
                 pending = {
                     "direction": "short",
                     "signal_i": i,
                     "signal_date": dt,
-                    "entry_reason": _entry_reason(row, "short"),
+                    "entry_reason": _entry_reason_for_group(row, "short", chosen_group),
+                    "entry_group_index": chosen_group,
                     "signal_atr": _positive_float(row.get("short_entry_atr", row.get("atr"))),
                     "target_micro_units": int(row.get("short_position_micro_units", 0) or 0)
                         if getattr(pending_p, "use_regime_position_sizing", False) else None,
@@ -1008,6 +1075,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             "missing_atr_skipped_entries": missing_atr_skipped_entries,
             "dynamic_size_skipped_entries": dynamic_size_skipped_entries,
             "account_disabled": bool(account_disabled),
+            "bollinger_reentry_locked": bool(bollinger_reentry_locked),
+            "bollinger_reentry_lock_activations": int(bollinger_reentry_lock_activations),
+            "bollinger_reentry_blocked_signals": int(bollinger_reentry_blocked_signals),
             "daily_drawdown_brake_multiplier": round(float(daily_brake_multiplier), 6),
             "daily_drawdown_brake_active": bool(daily_brake_multiplier < 0.999999),
             "daily_realized_equity_drawdown_pct": round(float(daily_realized_dd_pct), 6),
@@ -1027,7 +1097,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "margin_utilization_pct", "safe_capital_per_micro_unit", "safe_capital_used",
         "safe_capital_balance", "drawdown_reserve_amount", "gap_stress_points",
         "pnl_points", "pnl_amount", "holding_bars",
-        "exit_reason", "entry_reason",
+        "exit_reason", "entry_reason", "entry_group_index",
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
         "entry_atr", "planned_stop_points", "planned_stop_risk_amount",

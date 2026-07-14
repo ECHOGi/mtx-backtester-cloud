@@ -145,6 +145,12 @@ class StrategyParams:
     position_drawdown_brake_start_pct: float = 4.0
     position_drawdown_brake_full_pct: float = 10.0
     position_drawdown_brake_floor: float = 0.4
+    # v0.8.6.6：布林修復入口若以固定停損失敗，可鎖定該入口；
+    # 必須在出場後出現一次新的「收盤向下跌破布林下軌」事件才重新啟用。
+    use_bollinger_reentry_reset_after_fixed_stop: bool = False
+    bollinger_reentry_long_group_indices: tuple = ()
+    bollinger_reentry_period: int = 20
+    bollinger_reentry_std: float = 2.0
     # v0.7.0：長期持有控制。固定停損與斷頭不受最短持有期限制。
     minimum_holding_bars: int = 0
     chandelier_exit_confirmation_bars: int = 1
@@ -184,6 +190,10 @@ class StrategyParams:
             clean["profit_tier_atr_multiples"] = tuple(float(x) for x in clean["profit_tier_atr_multiples"])
         if "profit_tier_mults" in clean and clean["profit_tier_mults"] is not None:
             clean["profit_tier_mults"] = tuple(float(x) for x in clean["profit_tier_mults"])
+        if "bollinger_reentry_long_group_indices" in clean and clean["bollinger_reentry_long_group_indices"] is not None:
+            clean["bollinger_reentry_long_group_indices"] = tuple(
+                int(x) for x in clean["bollinger_reentry_long_group_indices"]
+            )
         return cls(**clean)
 
 
@@ -216,6 +226,9 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "position_defensive_micro_units", "position_allow_downsize",
                "use_drawdown_risk_brake", "position_drawdown_brake_start_pct",
                "position_drawdown_brake_full_pct", "position_drawdown_brake_floor",
+               "use_bollinger_reentry_reset_after_fixed_stop",
+               "bollinger_reentry_long_group_indices",
+               "bollinger_reentry_period", "bollinger_reentry_std",
                "minimum_holding_bars",
                "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
                "signal_exit_confirmation_bars",
@@ -283,7 +296,7 @@ def params_from_config(cfg: dict, base: StrategyParams = None) -> StrategyParams
         if k in d:
             d[k] = v
     # v0.7.0：位置政策與研究設定也可放在頂層，避免每次新增欄位都改 JSON 結構。
-    for section in ("position_policy", "research", "holding_policy"):
+    for section in ("position_policy", "research", "holding_policy", "entry_policy"):
         for k, v in (cfg.get(section) or {}).items():
             if k in d:
                 d[k] = v
@@ -440,25 +453,39 @@ def evaluate_combo(out: pd.DataFrame, block: dict):
     return sig.fillna(False), reasons
 
 
-def evaluate_entry(out: pd.DataFrame, spec):
-    """
-    進場條件求值（v0.3.3 新增，向下相容）：
-    - spec 為 dict：單一條件組合（沿用 evaluate_block_with_reasons，行為不變）
-    - spec 為 list：多個條件組合。組合內為 AND，組合之間為 OR，
-      任一組合全部成立即進場。reasons 會標註是哪一個組合觸發。
-    只是把既有函式的結果做 OR 彙總，不改變任何單一條件的計算。
+def evaluate_entry_detailed(out: pd.DataFrame, spec):
+    """回傳總訊號、總原因，以及各 OR 組合的獨立訊號與原因。
+
+    v0.8.6.6 保留各組合欄位，讓回測引擎可只鎖定某一個進場模組，
+    而不會誤擋同日成立的其他合法入口。
     """
     if isinstance(spec, list):
         total = pd.Series(False, index=out.index)
         reasons = pd.Series("", index=out.index, dtype="object")
+        groups = []
+        group_reasons = []
         for i, blk in enumerate(spec, 1):
             sig_i, r_i = evaluate_combo(out, blk)
-            newly = sig_i & ~total          # 先觸發的組合優先留下說明
+            sig_i = sig_i.fillna(False)
             prefix = f"組合{i}：" if len(spec) > 1 else ""
-            reasons = reasons.where(~newly, prefix + r_i)
+            full_reason = (prefix + r_i).where(sig_i, "")
+            groups.append(sig_i)
+            group_reasons.append(full_reason)
+            newly = sig_i & ~total
+            reasons = reasons.where(~newly, full_reason)
             total = total | sig_i
-        return total, reasons
-    return evaluate_block_with_reasons(out, spec)
+        return total.fillna(False), reasons, groups, group_reasons
+
+    sig, reasons = evaluate_block_with_reasons(out, spec)
+    sig = sig.fillna(False)
+    reasons = reasons.where(sig, "")
+    return sig, reasons, [sig], [reasons]
+
+
+def evaluate_entry(out: pd.DataFrame, spec):
+    """向下相容舊介面，只回傳總訊號與原因。"""
+    total, reasons, _, _ = evaluate_entry_detailed(out, spec)
+    return total, reasons
 
 
 def _apply_optional_filter(out: pd.DataFrame, signal: pd.Series, block) -> pd.Series:
@@ -515,8 +542,10 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
     out = add_indicator_columns(df, p, cfg, indicator_cache)
 
     direction = cfg.get("direction", p.direction)
-    long_sig, long_reasons = evaluate_entry(out, cfg.get("entry_long"))
-    short_sig, short_reasons = evaluate_entry(out, cfg.get("entry_short"))
+    long_sig, long_reasons, long_groups, long_group_reasons = evaluate_entry_detailed(
+        out, cfg.get("entry_long"))
+    short_sig, short_reasons, short_groups, short_group_reasons = evaluate_entry_detailed(
+        out, cfg.get("entry_short"))
 
     # v0.7.0：盤勢過濾與原始進場條件分離。可在不改策略積木的情況下
     # 比較「相同訊號、不同市場狀態」；未提供 filter 時與舊版完全一致。
@@ -527,6 +556,25 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
     out["short_entry"] = short_sig if direction in ("short", "both") else False
     out["long_entry_reasons"] = long_reasons.where(out["long_entry"], "")
     out["short_entry_reasons"] = short_reasons.where(out["short_entry"], "")
+
+    # v0.8.6.6：保留每個 OR 進場組合的原始訊號與原因。
+    # 這些欄位只供狀態式入口政策辨識，不改變既有策略訊號。
+    for idx, (sig_i, reason_i) in enumerate(zip(long_groups, long_group_reasons), 1):
+        out[f"long_entry_group_{idx}"] = sig_i.fillna(False)
+        out[f"long_entry_group_reason_{idx}"] = reason_i.where(sig_i, "")
+    for idx, (sig_i, reason_i) in enumerate(zip(short_groups, short_group_reasons), 1):
+        out[f"short_entry_group_{idx}"] = sig_i.fillna(False)
+        out[f"short_entry_group_reason_{idx}"] = reason_i.where(sig_i, "")
+
+    entry_policy = cfg.get("entry_policy") or {}
+    if bool(entry_policy.get("use_bollinger_reentry_reset_after_fixed_stop", False)):
+        period = int(entry_policy.get("bollinger_reentry_period", 20))
+        std = float(entry_policy.get("bollinger_reentry_std", 2.0))
+        out["bollinger_reentry_reset_long"] = evaluate_condition(out, {
+            "type": "close_cross_down_bollinger_lower",
+            "period": period,
+            "std": std,
+        }).fillna(False)
 
     # v0.7.0：核心＋條件式加碼部位。只在進場訊號根決定目標部位，
     # 不使用未完成的下一根資料，也不改變進出場訊號。
