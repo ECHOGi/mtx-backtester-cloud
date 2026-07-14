@@ -129,6 +129,7 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
     ch_count = 0
     macd_count = 0
     signal_count = 0
+    pending_time_invalid_exit_i = None
 
     for i in range(entry_i, n):
         row = df.iloc[i]
@@ -143,6 +144,11 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
             elif d == -1 and row["open"] >= margin_line:
                 exit_price = row["open"]
                 exit_reason = "margin_call"
+
+        if (exit_price is None and pending_time_invalid_exit_i is not None
+                and i > int(pending_time_invalid_exit_i)):
+            exit_price = row["open"]
+            exit_reason = "time_invalid_exit"
 
         if exit_price is None and p.use_fixed_stop:
             stop_distance = _stop_distance_points(p, entry_atr)
@@ -254,6 +260,20 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
         signal_count = signal_count + 1 if raw_signal and discretionary_ok else 0
         if exit_price is None and signal_count >= max(int(getattr(p, "signal_exit_confirmation_bars", 1) or 1), 1):
             exit_price, exit_reason = row["close"], "signal_exit"
+
+        if exit_price is None and bool(getattr(p, "use_time_invalid_exit", False)):
+            invalid_bars = max(int(getattr(p, "time_invalid_exit_bars", 5) or 5), 1)
+            if holding_now == invalid_bars and pending_time_invalid_exit_i is None:
+                mfe_limit = max(float(getattr(
+                    p, "time_invalid_max_favorable_atr_multiple", 0.5) or 0.0), 0.0)
+                mfe_multiple = max_favorable_points / entry_atr if entry_atr else None
+                losing_close = ((d == 1 and float(row["close"]) < entry_price)
+                                or (d == -1 and float(row["close"]) > entry_price))
+                require_losing = bool(getattr(
+                    p, "time_invalid_require_losing_close", True))
+                if (mfe_multiple is not None and mfe_multiple < mfe_limit
+                        and ((not require_losing) or losing_close) and i < n - 1):
+                    pending_time_invalid_exit_i = i
 
         if exit_price is None and i == n - 1:
             exit_price, exit_reason = row["close"], "end_of_data"

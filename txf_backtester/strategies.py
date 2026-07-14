@@ -151,6 +151,15 @@ class StrategyParams:
     bollinger_reentry_long_group_indices: tuple = ()
     bollinger_reentry_period: int = 20
     bollinger_reentry_std: float = 2.0
+    # v0.8.6.7：允許「取消實際固定停損」時，仍以指定 ATR 倍數作為
+    # 動態風險部位的虛擬風險距離，藉此只比較出場，不改變原本的部位估算基準。
+    position_sizing_reference_atr_multiple: float = 0.0
+    # v0.8.6.7：持有指定根數後，若最大有利移動不足且收盤仍在虧損側，
+    # 於下一根開盤退出。此規則不受 minimum_holding_bars 限制。
+    use_time_invalid_exit: bool = False
+    time_invalid_exit_bars: int = 5
+    time_invalid_max_favorable_atr_multiple: float = 0.5
+    time_invalid_require_losing_close: bool = True
     # v0.7.0：長期持有控制。固定停損與斷頭不受最短持有期限制。
     minimum_holding_bars: int = 0
     chandelier_exit_confirmation_bars: int = 1
@@ -229,6 +238,10 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_bollinger_reentry_reset_after_fixed_stop",
                "bollinger_reentry_long_group_indices",
                "bollinger_reentry_period", "bollinger_reentry_std",
+               "position_sizing_reference_atr_multiple",
+               "use_time_invalid_exit", "time_invalid_exit_bars",
+               "time_invalid_max_favorable_atr_multiple",
+               "time_invalid_require_losing_close",
                "minimum_holding_bars",
                "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
                "signal_exit_confirmation_bars",

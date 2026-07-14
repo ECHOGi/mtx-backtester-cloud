@@ -48,6 +48,31 @@ def expand_sweeps(obj: dict) -> list[dict]:
     return items
 
 
+
+def expand_variants(obj: dict) -> list[dict]:
+    """Expand a shared ``base_strategy`` plus named per-variant overrides.
+
+    This keeps formal research batches compact without changing the resulting
+    strategy configs. ``overrides`` keys use the same dotted paths as sweeps.
+    """
+    base = obj.get("base_strategy")
+    variants = obj.get("variants")
+    if not isinstance(base, dict) or not isinstance(variants, list):
+        return []
+    items = []
+    for index, variant in enumerate(variants, 1):
+        if not isinstance(variant, dict):
+            raise ValueError(f"variants 第 {index} 項必須是物件")
+        cfg = copy.deepcopy(base)
+        overrides = variant.get("overrides") or {}
+        if not isinstance(overrides, dict):
+            raise ValueError(f"variants 第 {index} 項 overrides 必須是物件")
+        for path, value in overrides.items():
+            _set_nested(cfg, path, value)
+        cfg["name"] = str(variant.get("name") or variant.get("label") or f"策略{index:02d}")
+        items.append(cfg)
+    return items
+
 def parse_strategy_batch(text: str, symbol: str = "MTX", max_strategies: int = 50):
     obj = json.loads(text)
     batch_name = "MTX批次回測"
@@ -58,10 +83,14 @@ def parse_strategy_batch(text: str, symbol: str = "MTX", max_strategies: int = 5
         batch_name = str(obj.get("batch_name") or obj.get("name") or batch_name)
         raw_items = obj.get("strategies") or obj.get("items")
         sweep_items = expand_sweeps(obj)
+        variant_items = expand_variants(obj)
         if raw_items is None:
-            raw_items = [] if sweep_items else [obj]
-        raw_items = list(raw_items) + sweep_items
-        batch_meta = {k: v for k, v in obj.items() if k not in {"strategies", "items", "sweep", "sweeps"}}
+            raw_items = [] if (sweep_items or variant_items) else [obj]
+        raw_items = list(raw_items) + sweep_items + variant_items
+        batch_meta = {
+            k: v for k, v in obj.items()
+            if k not in {"strategies", "items", "sweep", "sweeps", "base_strategy", "variants"}
+        }
     else:
         raise ValueError("批次策略 JSON 必須是策略陣列或包含 strategies 的物件")
     if not raw_items:

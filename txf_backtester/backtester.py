@@ -647,30 +647,43 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             entry_atr = pending.get("signal_atr")
             planned_stop_points = (_stop_distance_points(entry_p, entry_atr)
                                    if getattr(entry_p, "use_fixed_stop", False) else None)
+            # v0.8.6.7：實際停損與部位估算距離可分離。
+            # 只有明確設定 reference ATR 倍數時才覆寫部位估算距離；
+            # 因此舊策略與一般固定停損策略完全維持原行為。
+            sizing_reference_multiple = _positive_float(
+                getattr(entry_p, "position_sizing_reference_atr_multiple", None))
+            position_sizing_reference_points = planned_stop_points
+            if sizing_reference_multiple is not None:
+                atr_value = _positive_float(entry_atr)
+                position_sizing_reference_points = (
+                    atr_value * sizing_reference_multiple if atr_value is not None else None)
             skip_entry = False
-            if (getattr(entry_p, "use_fixed_stop", False)
-                    and _stop_threshold_mode(entry_p) == "entry_atr"
-                    and planned_stop_points is None):
-                # ATR 尚未形成時，不可用未完成資料猜測停損距離。
+            needs_atr_reference = (
+                (getattr(entry_p, "use_fixed_stop", False)
+                 and _stop_threshold_mode(entry_p) == "entry_atr")
+                or sizing_reference_multiple is not None
+            )
+            if needs_atr_reference and position_sizing_reference_points is None:
+                # ATR 尚未形成時，不可用未完成資料猜測停損／部位風險距離。
                 missing_atr_skipped_entries += 1
                 skip_entry = True
 
             if getattr(entry_p, "use_safe_capital_position_sizing", False) or str(getattr(entry_p, "position_sizing_mode", "fixed")).lower() in {"dynamic_safe_capital", "dynamic_safe_capital_capped"}:
                 position_spec = None if skip_entry else _safe_capital_position_spec(
-                    planned_stop_points, entry_p, realized, cost)
+                    position_sizing_reference_points, entry_p, realized, cost)
                 if not skip_entry and position_spec is None:
                     dynamic_size_skipped_entries += 1
                     skip_entry = True
             elif getattr(entry_p, "use_regime_position_sizing", False):
                 target_units = pending.get("target_micro_units")
                 position_spec = None if skip_entry else _regime_position_spec(
-                    target_units, planned_stop_points, entry_p, realized, cost)
+                    target_units, position_sizing_reference_points, entry_p, realized, cost)
                 if not skip_entry and position_spec is None:
                     dynamic_size_skipped_entries += 1
                     skip_entry = True
             elif getattr(entry_p, "use_dynamic_position_sizing", False):
                 position_spec = None if skip_entry else _dynamic_position_spec(
-                    planned_stop_points, entry_p, realized, cost, realized_peak_equity)
+                    position_sizing_reference_points, entry_p, realized, cost, realized_peak_equity)
                 if not skip_entry and position_spec is None:
                     dynamic_size_skipped_entries += 1
                     skip_entry = True
@@ -678,10 +691,16 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 position_spec = _fixed_position_spec(cost, entry_p)
 
             planned_stop_risk_amount = None
+            position_sizing_reference_risk_amount = None
             if position_spec is not None:
                 planned_stop_risk_amount = _planned_stop_risk_amount(
                     planned_stop_points, cost, position_spec.get("point_value_total"))
+                position_sizing_reference_risk_amount = _planned_stop_risk_amount(
+                    position_sizing_reference_points, cost, position_spec.get("point_value_total"))
                 position_spec.setdefault("planned_stop_risk_amount", planned_stop_risk_amount)
+                position_spec.setdefault(
+                    "position_sizing_reference_risk_amount",
+                    position_sizing_reference_risk_amount)
 
             cap = _positive_float(getattr(entry_p, "max_entry_risk_amount", None))
             if (not skip_entry and getattr(entry_p, "use_entry_risk_cap", False)
@@ -717,6 +736,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "entry_atr": entry_atr,
                     "planned_stop_points": planned_stop_points,
                     "planned_stop_risk_amount": planned_stop_risk_amount,
+                    "position_sizing_reference_points": position_sizing_reference_points,
+                    "position_sizing_reference_risk_amount": position_sizing_reference_risk_amount,
                     "entry_risk_cap_amount": cap
                     if (getattr(entry_p, "use_entry_risk_cap", False)
                         and _stop_threshold_mode(entry_p) == "entry_atr") else None,
@@ -758,6 +779,14 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 elif d == -1 and row["open"] >= margin_line:
                     exit_price = row["open"]
                     exit_reason = "margin_call"
+
+            # a00) v0.8.6.7 無效交易退出：前一根收盤確認，當根開盤執行。
+            # 斷頭開盤跳空仍保有更高優先級；其餘停損與收盤出場不再重複判斷。
+            pending_time_exit_i = pos.get("pending_time_invalid_exit_i")
+            if (exit_price is None and pending_time_exit_i is not None
+                    and i > int(pending_time_exit_i)):
+                exit_price = row["open"]
+                exit_reason = "time_invalid_exit"
 
             # a) 停損（固定點數或進場 ATR 倍數；盤中觸價）
             if exit_price is None and active_p.use_fixed_stop:
@@ -891,6 +920,26 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             if exit_price is None and signal_ok:
                 exit_price, exit_reason = row["close"], "signal_exit"
 
+            # e3) v0.8.6.7 五根K無效交易退出。
+            # 只在指定持有根數的收盤檢查一次；若成立，下一根開盤退出。
+            if exit_price is None and bool(getattr(active_p, "use_time_invalid_exit", False)):
+                invalid_bars = max(int(getattr(active_p, "time_invalid_exit_bars", 5) or 5), 1)
+                if holding_now == invalid_bars and pos.get("pending_time_invalid_exit_i") is None:
+                    entry_atr_value = _positive_float(pos.get("entry_atr"))
+                    mfe_limit = max(float(getattr(
+                        active_p, "time_invalid_max_favorable_atr_multiple", 0.5) or 0.0), 0.0)
+                    mfe_multiple = None
+                    if entry_atr_value is not None:
+                        mfe_multiple = float(pos.get("max_favorable_points", 0.0)) / entry_atr_value
+                    losing_close = ((d == 1 and float(row["close"]) < ep)
+                                    or (d == -1 and float(row["close"]) > ep))
+                    require_losing = bool(getattr(
+                        active_p, "time_invalid_require_losing_close", True))
+                    if (mfe_multiple is not None and mfe_multiple < mfe_limit
+                            and ((not require_losing) or losing_close) and i < n - 1):
+                        pos["pending_time_invalid_exit_i"] = i
+                        pos["time_invalid_mfe_atr_multiple"] = mfe_multiple
+
             # f) 資料結束強制平倉
             if exit_price is None and i == n - 1:
                 exit_price, exit_reason = row["close"], "end_of_data"
@@ -960,6 +1009,15 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     if _positive_float(pos.get("planned_stop_points")) else None,
                 "planned_stop_risk_amount": round(float(pos.get("planned_stop_risk_amount")), 1)
                     if _positive_float(pos.get("planned_stop_risk_amount")) else None,
+                "position_sizing_reference_points": round(
+                    float(pos.get("position_sizing_reference_points")), 4)
+                    if _positive_float(pos.get("position_sizing_reference_points")) else None,
+                "position_sizing_reference_risk_amount": round(
+                    float(pos.get("position_sizing_reference_risk_amount")), 1)
+                    if _positive_float(pos.get("position_sizing_reference_risk_amount")) else None,
+                "time_invalid_mfe_atr_multiple": round(
+                    float(pos.get("time_invalid_mfe_atr_multiple")), 4)
+                    if pos.get("time_invalid_mfe_atr_multiple") is not None else None,
                 "entry_risk_cap_amount": round(float(pos.get("entry_risk_cap_amount")), 1)
                     if _positive_float(pos.get("entry_risk_cap_amount")) else None,
                 "risk_budget_amount": round(float(pos.get("risk_budget_amount")), 1)
@@ -1101,6 +1159,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
         "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
+        "position_sizing_reference_points", "position_sizing_reference_risk_amount",
+        "time_invalid_mfe_atr_multiple",
         "entry_risk_cap_amount", "risk_budget_amount", "base_risk_fraction",
         "effective_risk_fraction", "drawdown_brake_multiplier",
         "realized_equity_drawdown_pct", "realized_equity_peak", "stress_risk_amount",
