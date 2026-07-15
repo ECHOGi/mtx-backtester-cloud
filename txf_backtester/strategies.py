@@ -180,6 +180,12 @@ class StrategyParams:
     partial_r_multiple: float = 3.0
     partial_exit_fraction: float = 0.5
     initial_r_atr_floor_multiple: float = 0.5
+    # v0.8.7.3：獲利成熟後的快速反彈退出。
+    # 先以持倉最大順向浮盈 / 進場 ATR 達到門檻，再判斷單日收盤反向漲跌幅；
+    # 收盤確認後於下一根開盤退出，避免使用尚未完成K棒。
+    use_mfe_rebound_exit: bool = False
+    mfe_rebound_activation_atr_multiple: float = 4.0
+    mfe_rebound_close_return_pct: float = 3.0
     # 研究基準目標：只做比較輸出，不影響交易。
     benchmark_name: str = ""
     benchmark_annual_return_target: float = 0.0
@@ -275,6 +281,8 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "signal_exit_confirmation_bars", "use_max_holding_exit", "max_holding_bars",
                "use_partial_r_exit", "partial_r_multiple", "partial_exit_fraction",
                "initial_r_atr_floor_multiple",
+               "use_mfe_rebound_exit", "mfe_rebound_activation_atr_multiple",
+               "mfe_rebound_close_return_pct",
                "benchmark_name", "benchmark_annual_return_target",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]

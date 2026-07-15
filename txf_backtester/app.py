@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.7.2｜空單事件中斷續跑版。
+"""MTX 台指期回測平台 v0.8.7.3｜日K獲利成熟反彈退出版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -35,8 +35,8 @@ from google_drive_uploader import (download_drive_file_bytes,
 from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.7.2",
-    "release_name": "空單事件中斷續跑版",
+    "version": "v0.8.7.3",
+    "release_name": "日K獲利成熟反彈退出版",
     "build_id": "20260715-2",
 }
 try:

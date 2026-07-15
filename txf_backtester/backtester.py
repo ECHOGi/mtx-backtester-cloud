@@ -837,6 +837,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 exit_price = row["open"]
                 exit_reason = "max_holding_exit"
 
+            pending_mfe_rebound_i = pos.get("pending_mfe_rebound_exit_i")
+            if (exit_price is None and pending_mfe_rebound_i is not None
+                    and i > int(pending_mfe_rebound_i)):
+                exit_price = row["open"]
+                exit_reason = "mfe_rebound_exit"
+
             # a) 停損（固定點數或進場 ATR 倍數；盤中觸價）
             if exit_price is None and active_p.use_fixed_stop:
                 stop_distance = _positive_float(pos.get("planned_stop_points"))
@@ -1057,6 +1063,35 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 if holding_now >= max_bars and pos.get("pending_max_holding_exit_i") is None and i < n - 1:
                     pos["pending_max_holding_exit_i"] = i
 
+            # v0.8.7.3 獲利成熟後快速反彈退出。
+            # 先確認最大順向浮盈已達進場ATR倍數，再以單日收盤反向漲跌幅觸發；
+            # 收盤確認後於下一根開盤執行。
+            if exit_price is None and bool(getattr(active_p, "use_mfe_rebound_exit", False)):
+                entry_atr_value = _positive_float(pos.get("entry_atr"))
+                activation = max(float(getattr(
+                    active_p, "mfe_rebound_activation_atr_multiple", 4.0) or 0.0), 0.0)
+                rebound_pct = max(float(getattr(
+                    active_p, "mfe_rebound_close_return_pct", 3.0) or 0.0), 0.0)
+                mfe_multiple = None
+                close_return_pct = None
+                if entry_atr_value is not None:
+                    mfe_multiple = float(pos.get("max_favorable_points", 0.0)) / entry_atr_value
+                if i > 0:
+                    prev_close = _positive_float(df.iloc[i - 1].get("close"))
+                    if prev_close is not None:
+                        close_return_pct = (float(row["close"]) / prev_close - 1.0) * 100.0
+                rebound_hit = bool(
+                    close_return_pct is not None and rebound_pct > 0
+                    and ((d == -1 and close_return_pct >= rebound_pct)
+                         or (d == 1 and close_return_pct <= -rebound_pct))
+                )
+                if (mfe_multiple is not None and activation > 0
+                        and mfe_multiple >= activation and rebound_hit
+                        and pos.get("pending_mfe_rebound_exit_i") is None and i < n - 1):
+                    pos["pending_mfe_rebound_exit_i"] = i
+                    pos["mfe_rebound_trigger_mfe_atr_multiple"] = mfe_multiple
+                    pos["mfe_rebound_trigger_close_return_pct"] = close_return_pct
+
             # f) 資料結束強制平倉
             if exit_price is None and i == n - 1:
                 exit_price, exit_reason = row["close"], "end_of_data"
@@ -1160,6 +1195,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     if pos.get("realized_equity_peak") is not None else None,
                 "max_favorable_atr_multiple": round(max_favorable_atr_multiple, 4)
                     if max_favorable_atr_multiple is not None else None,
+                "mfe_rebound_trigger_mfe_atr_multiple": round(
+                    float(pos.get("mfe_rebound_trigger_mfe_atr_multiple")), 4)
+                    if pos.get("mfe_rebound_trigger_mfe_atr_multiple") is not None else None,
+                "mfe_rebound_trigger_close_return_pct": round(
+                    float(pos.get("mfe_rebound_trigger_close_return_pct")), 4)
+                    if pos.get("mfe_rebound_trigger_close_return_pct") is not None else None,
                 "required_safety_capital": round(required_safety_capital, 1),
             })
             realized += amount
@@ -1288,6 +1329,8 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "realized_equity_drawdown_pct", "realized_equity_peak", "stress_risk_amount",
         "stress_multiple", "available_equity_at_entry",
         "max_favorable_atr_multiple",
+        "mfe_rebound_trigger_mfe_atr_multiple",
+        "mfe_rebound_trigger_close_return_pct",
         "required_safety_capital"])
     equity_df = pd.DataFrame(equity_rows)
     return trades_df, equity_df
