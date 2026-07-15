@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.7.1｜空單事件區間加速版。
+"""MTX 台指期回測平台 v0.8.7.2｜空單事件中斷續跑版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -23,6 +23,8 @@ from benchmark_00631l import (BENCHMARK_NAME, benchmark_metrics,
 from checkpointing import (append_rows as append_checkpoint_rows, checkpoint_paths,
                            clear_checkpoint, make_signature, prepare_resume,
                            read_meta as read_checkpoint_meta, write_meta as write_checkpoint_meta)
+from event_checkpointing import (clear_event_checkpoint, event_meta_path,
+                                 prepare_event_resume, save_event_unit)
 from future_scenarios import ScenarioConfig, run_cutoff_scenarios
 from config import DEFAULT_SYMBOL, SYMBOLS
 from continuous_contract import build_session_continuous
@@ -33,8 +35,8 @@ from google_drive_uploader import (download_drive_file_bytes,
 from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.7.1",
-    "release_name": "空單事件區間加速版",
+    "version": "v0.8.7.2",
+    "release_name": "空單事件中斷續跑版",
     "build_id": "20260715-2",
 }
 try:
@@ -535,7 +537,10 @@ with st.sidebar:
             st.caption("長回測每200筆寫入檢查點；正常結束或中斷前仍會補寫不足200筆的尾批。畫面重置後使用相同設定再按一次，即會接續已保存部分。")
         else:
             selected_cutoffs, future_paths_per_state = [], 0
-            restart_scenario_checkpoint = False
+            restart_scenario_checkpoint = st.checkbox(
+                "忽略事件回測的中斷進度，從頭重跑", value=False,
+                help="只有事件區間策略批次會使用。平常不要勾選；斷線後以相同設定再按開始回測，平台會自動接續已完成的策略×路徑×事件。")
+            st.caption("事件區間回測每完成一個策略×seed×事件就立即保存；斷線後使用相同設定可自動續跑。")
         data_error = ""
     except Exception as e:
         preview = pd.DataFrame()
@@ -600,7 +605,47 @@ if run_clicked:
         checkpoint_signature = ""
         checkpoint_rows_path = checkpoint_meta_path = None
         resume_distribution = pd.DataFrame()
-        if research_mode.startswith("多截止日"):
+        event_resume_units = {}
+        event_resume_units_loaded = 0
+        if event_mode:
+            data_dates = pd.to_datetime(filtered["trade_date"], errors="coerce")
+            checkpoint_payload = {
+                "checkpoint_type": "event_units_v1",
+                "platform": APP_VERSION,
+                "batch_name": batch_name,
+                "strategies": final_items,
+                "data_rows": int(len(filtered)),
+                "data_start": str(data_dates.min()),
+                "data_end": str(data_dates.max()),
+                "data_first_close": float(pd.to_numeric(filtered["close"], errors="coerce").iloc[0]),
+                "data_last_close": float(pd.to_numeric(filtered["close"], errors="coerce").iloc[-1]),
+                "event_windows": event_windows,
+                "event_warmup_trade_days": int(event_warmup_trade_days),
+                "path_count": int(path_count),
+                "seed": int(base_seed),
+                "initial_capital": float(initial_capital),
+                "symbol": symbol, "fee": float(fee), "slippage": float(slippage),
+                "use_tax": bool(use_tax), "margin_check": bool(use_margin_call_check),
+            }
+            checkpoint_signature = make_signature(checkpoint_payload)
+            checkpoint_meta_path = event_meta_path(checkpoint_signature)
+            active_checkpoint_signature = checkpoint_signature
+            active_checkpoint_meta_path = checkpoint_meta_path
+            event_resume_units, checkpoint_meta, cleared_completed_checkpoint = prepare_event_resume(
+                checkpoint_signature, restart=bool(restart_scenario_checkpoint))
+            event_resume_units_loaded = int(len(event_resume_units))
+            if cleared_completed_checkpoint:
+                st.sidebar.caption("已清除上一批完整事件檢查點，這次將建立新的回測工作。")
+            if event_resume_units_loaded:
+                st.sidebar.info(
+                    f"發現同設定中斷進度：已完成{event_resume_units_loaded:,}個事件單元，將自動續跑。")
+            write_checkpoint_meta(checkpoint_meta_path, {
+                "signature": checkpoint_signature, "batch_name": batch_name,
+                "done": event_resume_units_loaded, "total": None,
+                "complete": False, "status": "running", "checkpoint_type": "event_units_v1",
+                "updated_at": pd.Timestamp.now().isoformat(),
+            })
+        elif research_mode.startswith("多截止日"):
             data_dates = pd.to_datetime(filtered["trade_date"], errors="coerce")
             checkpoint_payload = {
                 "platform": APP_VERSION,
@@ -652,10 +697,21 @@ if run_clicked:
             safety_buffer_amount=safety_buffer_amount)
         progress = st.sidebar.progress(0, text="準備回測")
         if event_mode:
+            def _event_checkpoint_callback(unit, done, total):
+                save_event_unit(checkpoint_signature, unit)
+                write_checkpoint_meta(checkpoint_meta_path, {
+                    "signature": checkpoint_signature, "batch_name": batch_name,
+                    "done": int(done), "total": int(total),
+                    "complete": False, "status": "running", "checkpoint_type": "event_units_v1",
+                    "updated_at": pd.Timestamp.now().isoformat(),
+                })
+
             result = run_batch_event_monte_carlo(
                 filtered, final_items, cost, seeds, float(initial_capital),
                 event_windows=event_windows, warmup_trade_days=event_warmup_trade_days,
-                progress_callback=lambda pct, txt: progress.progress(pct, text="五次事件回測｜" + txt))
+                progress_callback=lambda pct, txt: progress.progress(pct, text="五次事件回測｜" + txt),
+                resume_units=event_resume_units,
+                checkpoint_callback=_event_checkpoint_callback)
         else:
             result = run_batch_monte_carlo(
                 filtered, final_items, cost, seeds, float(initial_capital),
@@ -747,6 +803,9 @@ if run_clicked:
             "expanded_strategy_count": len(final_items),
             "scenario_checkpoint_signature": checkpoint_signature,
             "scenario_resume_rows_loaded": int(len(resume_distribution)),
+            "event_checkpoint_signature": checkpoint_signature if event_mode else "",
+            "event_resume_units_loaded": int(event_resume_units_loaded),
+            "event_checkpoint_total_units": int(result.get("event_checkpoint_total_units", 0)),
             "event_mode": bool(event_mode),
             "event_windows": event_windows,
             "event_warmup_trade_days": int(event_warmup_trade_days),
@@ -774,7 +833,10 @@ if run_clicked:
         st.session_state["v086_run_status"] = "complete"
         # 結果已封裝完成後，檢查點即完成使命；不保留成下一次的「中斷進度」。
         if checkpoint_signature:
-            clear_checkpoint(checkpoint_signature)
+            if event_mode:
+                clear_event_checkpoint(checkpoint_signature)
+            else:
+                clear_checkpoint(checkpoint_signature)
     except Exception as e:
         st.session_state["v086_run_status"] = "failed"
         if active_checkpoint_meta_path is not None:
@@ -810,7 +872,7 @@ with st.expander("？ 如何閱讀本頁結果", expanded=False):
 
 **v0.8.5起的新條件**可在策略JSON使用SAR翻多／翻空、乖離率、開盤跳空、完整缺口未回補及寶塔線翻紅／翻黑；SAR另可設為盤中自適應移動停損。
 
-**v0.8.6.4長回測續跑**會每200筆保存一次情境結果；若主機被強制終止，最多可能重算最近199筆。只有未完成的檢查點才會自動續跑；完整完成並封裝結果後會立即結案清除，不會在下一批被誤認為仍在執行。完成後不再自動重新執行整頁，避免大型結果頁持續閃跳。
+**長回測續跑**：未來情境每200筆保存一次；事件區間回測則每完成一個「策略×seed×事件」立即保存。若瀏覽器斷線或工作階段中止，使用相同設定重新按開始回測會自動略過已完成單元。完整完成並封裝結果後會立即清除檢查點。
 
 **回撤煞車觀察欄位**會在資金曲線與批次結果中記錄逐日煞車倍率、觸發次數與煞車狀態交易日占比，可用來判斷較早啟動的煞車是精準閃避尾端，還是長期常駐造成的變相降風險。
 """)

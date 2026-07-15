@@ -251,78 +251,147 @@ def _slice_event_frame(frame: pd.DataFrame, event: dict) -> pd.DataFrame:
     return out
 
 
+def _compact_event_equity(equity: pd.DataFrame) -> pd.DataFrame:
+    """保留續跑重建績效與結果圖表真正需要的權益欄位。"""
+    if equity is None or equity.empty:
+        return pd.DataFrame()
+    wanted = [
+        "datetime", "equity", "account_equity", "maintenance_margin_amount",
+        "account_disabled", "risk_cap_skipped_entries", "missing_atr_skipped_entries",
+        "dynamic_size_skipped_entries", "daily_drawdown_brake_multiplier",
+        "daily_realized_equity_drawdown_pct",
+    ]
+    cols = [c for c in wanted if c in equity.columns]
+    return equity[cols].copy()
+
+
+def _run_event_unit(session_bars: pd.DataFrame, name: str, cfg: dict, cost: CostModel,
+                    seed: int, current_capital: float, event: dict, event_idx: int,
+                    warmup_trade_days: int, simulation_config: SimulationConfig | None,
+                    required_timeframes: set[str], timeframe_cache: dict,
+                    validation: dict) -> dict:
+    cache_key = (int(seed), int(event_idx), tuple(sorted(required_timeframes)))
+    if cache_key not in timeframe_cache:
+        source = _event_source_slice(session_bars, event, warmup_trade_days)
+        tfs = build_simulated_timeframes(
+            source, int(seed), simulation_config, required=required_timeframes)
+        timeframe_cache[cache_key] = (source, tfs)
+        if "30m" in tfs:
+            errors = validate_simulation(source, tfs["30m"])
+            validation["checked_event_paths"] += 1
+            if errors:
+                validation["valid"] = False
+                validation["error_count"] += len(errors)
+                validation["errors"].extend(errors[:10])
+    source, tfs = timeframe_cache[cache_key]
+    frame, params, mt_info = prepare_execution_frame(tfs, cfg)
+    event_frame = _slice_event_frame(frame, event)
+    params.position_sizing_capital = float(current_capital)
+    trades, equity = run_backtest(event_frame, cost, params)
+
+    daily_event = _slice_event_frame(tfs["1D"], event)
+    event_metrics = compute_metrics(
+        trades, equity, margin_reference=cost.original_margin_amount,
+        quantity=cost.quantity, initial_capital=current_capital,
+        market_data=daily_event)
+    pnl = float(event_metrics.get("總損益(元)", 0.0) or 0.0)
+
+    trades = trades.copy()
+    if not trades.empty:
+        trades.insert(0, "事件", event["label"])
+        trades.insert(1, "事件序號", event_idx)
+    equity = _compact_event_equity(equity)
+    if not equity.empty:
+        equity.insert(0, "事件", event["label"])
+        equity.insert(1, "事件序號", event_idx)
+        equity["equity"] = pd.to_numeric(equity["account_equity"], errors="coerce") - float(current_capital)
+        # 串接多事件時，統一轉回整批初始本金的累計損益，稍後再加前段已實現損益。
+    daily_event = daily_event.copy()
+
+    event_row = {
+        "策略名稱": name,
+        "seed": int(seed),
+        "事件": event["label"],
+        "事件序號": int(event_idx),
+        "開始日": str(event["start"].date()),
+        "結束日": str(event["end"].date()),
+        "事件起始資金(元)": round(current_capital, 0),
+        "事件期末資金(元)": round(current_capital + pnl, 0),
+        "總損益(元)": round(pnl, 0),
+        "最大回撤(元)": event_metrics.get("最大回撤(元)", 0.0),
+        "最大回撤率(%)": event_metrics.get(
+            "策略標準最大回撤率(%)", event_metrics.get("最大回撤(%)", np.nan)),
+        "報酬回撤比": event_metrics.get("報酬回撤比", np.nan),
+        "獲利因子": event_metrics.get("獲利因子", np.nan),
+        "交易次數": event_metrics.get("交易次數", 0),
+        "勝率(%)": event_metrics.get("勝率(%)", 0.0),
+        "期末強制平倉損益(元)": event_metrics.get("期末強制平倉損益(元)", 0.0),
+        "斷頭次數": event_metrics.get("斷頭次數", 0),
+    }
+    return {
+        "strategy": name,
+        "seed": int(seed),
+        "event_index": int(event_idx),
+        "event_label": event["label"],
+        "start_capital": float(current_capital),
+        "end_capital": float(current_capital + pnl),
+        "pnl": float(pnl),
+        "trades": trades,
+        "equity": equity,
+        "market": daily_event,
+        "event_row": event_row,
+        "multi_timeframe": mt_info,
+    }
+
+
 def _strategy_event_run(session_bars: pd.DataFrame, name: str, cfg: dict, cost: CostModel,
                         seed: int, initial_capital: float, event_windows: list[dict],
                         warmup_trade_days: int, simulation_config: SimulationConfig | None,
                         required_timeframes: set[str], timeframe_cache: dict,
-                        validation: dict) -> dict:
+                        validation: dict, resume_units: dict | None = None,
+                        unit_complete_callback=None, progress_unit_callback=None) -> dict:
     current_capital = float(initial_capital)
+    cumulative_before = 0.0
     all_trades, all_equity, market_parts, event_rows = [], [], [], []
-    last_frame = pd.DataFrame()
     last_mt_info = {}
+    resume_units = resume_units or {}
 
     for event_idx, event in enumerate(event_windows, 1):
-        cache_key = (int(seed), int(event_idx), tuple(sorted(required_timeframes)))
-        if cache_key not in timeframe_cache:
-            source = _event_source_slice(session_bars, event, warmup_trade_days)
-            tfs = build_simulated_timeframes(
-                source, int(seed), simulation_config, required=required_timeframes)
-            timeframe_cache[cache_key] = (source, tfs)
-            if "30m" in tfs:
-                errors = validate_simulation(source, tfs["30m"])
-                validation["checked_event_paths"] += 1
-                if errors:
-                    validation["valid"] = False
-                    validation["error_count"] += len(errors)
-                    validation["errors"].extend(errors[:10])
-        source, tfs = timeframe_cache[cache_key]
-        frame, params, mt_info = prepare_execution_frame(tfs, cfg)
-        event_frame = _slice_event_frame(frame, event)
-        params.position_sizing_capital = float(current_capital)
-        trades, equity = run_backtest(event_frame, cost, params)
+        key = (str(name), int(seed), int(event_idx))
+        unit = resume_units.get(key)
+        # 只接受資金鏈連續且設定相同的完成單元；不連續者自該事件起重算。
+        valid_resume = isinstance(unit, dict) and abs(
+            float(unit.get("start_capital", np.nan)) - float(current_capital)) < 0.51
+        if not valid_resume:
+            unit = _run_event_unit(
+                session_bars, name, cfg, cost, seed, current_capital, event, event_idx,
+                warmup_trade_days, simulation_config, required_timeframes,
+                timeframe_cache, validation)
+            if unit_complete_callback:
+                unit_complete_callback(unit)
+        if progress_unit_callback:
+            progress_unit_callback(name, seed, event_idx, bool(valid_resume))
 
-        daily_event = _slice_event_frame(tfs["1D"], event)
-        event_metrics = compute_metrics(
-            trades, equity, margin_reference=cost.original_margin_amount,
-            quantity=cost.quantity, initial_capital=current_capital,
-            market_data=daily_event)
-        pnl = float(event_metrics.get("總損益(元)", 0.0) or 0.0)
-
-        trades = trades.copy()
-        if not trades.empty:
-            trades.insert(0, "事件", event["label"])
-            trades.insert(1, "事件序號", event_idx)
-            all_trades.append(trades)
-        equity = equity.copy()
-        if not equity.empty:
-            equity.insert(0, "事件", event["label"])
-            equity.insert(1, "事件序號", event_idx)
-            # 每個事件承接前一事件的期末資金；全域 equity 以原始本金為基準。
-            equity["equity"] = pd.to_numeric(equity["account_equity"], errors="coerce") - float(initial_capital)
-            all_equity.append(equity)
-        market_parts.append(daily_event)
-        event_rows.append({
-            "策略名稱": name,
-            "seed": int(seed),
-            "事件": event["label"],
-            "事件序號": int(event_idx),
-            "開始日": str(event["start"].date()),
-            "結束日": str(event["end"].date()),
-            "事件起始資金(元)": round(current_capital, 0),
-            "事件期末資金(元)": round(current_capital + pnl, 0),
-            "總損益(元)": round(pnl, 0),
-            "最大回撤(元)": event_metrics.get("最大回撤(元)", 0.0),
-            "最大回撤率(%)": event_metrics.get("策略標準最大回撤率(%)", event_metrics.get("最大回撤(%)", np.nan)),
-            "報酬回撤比": event_metrics.get("報酬回撤比", np.nan),
-            "獲利因子": event_metrics.get("獲利因子", np.nan),
-            "交易次數": event_metrics.get("交易次數", 0),
-            "勝率(%)": event_metrics.get("勝率(%)", 0.0),
-            "期末強制平倉損益(元)": event_metrics.get("期末強制平倉損益(元)", 0.0),
-            "斷頭次數": event_metrics.get("斷頭次數", 0),
-        })
-        current_capital += pnl
-        last_frame = event_frame
-        last_mt_info = mt_info
+        trades = unit.get("trades")
+        equity = unit.get("equity")
+        market = unit.get("market")
+        if isinstance(trades, pd.DataFrame) and not trades.empty:
+            all_trades.append(trades.copy())
+        if isinstance(equity, pd.DataFrame) and not equity.empty:
+            eq = equity.copy()
+            # 單一事件checkpoint中的equity以該事件起始資金為基準；轉成整批累計損益。
+            eq["equity"] = pd.to_numeric(eq["equity"], errors="coerce") + float(cumulative_before)
+            if "account_equity" in eq.columns:
+                eq["account_equity"] = float(initial_capital) + pd.to_numeric(eq["equity"], errors="coerce")
+            all_equity.append(eq)
+        if isinstance(market, pd.DataFrame) and not market.empty:
+            market_parts.append(market.copy())
+        event_row = unit.get("event_row")
+        if isinstance(event_row, dict):
+            event_rows.append(dict(event_row))
+        current_capital = float(unit.get("end_capital", current_capital))
+        cumulative_before = current_capital - float(initial_capital)
+        last_mt_info = dict(unit.get("multi_timeframe") or {})
 
     trades_all = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
     equity_all = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()
@@ -332,19 +401,19 @@ def _strategy_event_run(session_bars: pd.DataFrame, name: str, cfg: dict, cost: 
         quantity=cost.quantity, initial_capital=float(initial_capital),
         market_data=market_all)
     return {
-        "seed": int(seed), "config": cfg, "frame": last_frame,
+        "seed": int(seed), "config": cfg, "frame": pd.DataFrame(),
         "trades": trades_all, "equity": equity_all, "metrics": metrics,
         "yearly": yearly_stats(trades_all, equity_all),
         "multi_timeframe": last_mt_info,
         "event_rows": event_rows,
     }
 
-
 def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[str, dict]],
                                 cost: CostModel, seeds: list[int], initial_capital: float,
                                 event_windows: list[dict], warmup_trade_days: int = 140,
                                 simulation_config: SimulationConfig | None = None,
-                                progress_callback=None) -> dict:
+                                progress_callback=None, resume_units: dict | None = None,
+                                checkpoint_callback=None) -> dict:
     """只在指定事件區間回測；暖機資料僅供指標形成，不允許在事件外進場。"""
     windows = _normalize_event_windows(session_bars, event_windows)
     requested_seeds = [int(x) for x in seeds] or [42]
@@ -369,6 +438,26 @@ def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[st
         "error_count": 0,
         "errors": [],
     }
+    resume_units = resume_units or {}
+    resumed_units = 0
+
+    def _unit_progress(strategy_name, unit_seed, event_idx, resumed):
+        nonlocal done, resumed_units
+        done += 1
+        if resumed:
+            resumed_units += 1
+        if progress_callback:
+            elapsed = max(time.perf_counter() - started, 1e-9)
+            newly_done = max(done - resumed_units, 1)
+            remaining = (elapsed / newly_done) * max(total_runs - done, 0)
+            state = "續跑略過" if resumed else "完成"
+            progress_callback(
+                done / max(total_runs, 1),
+                f"{done}/{total_runs}｜{strategy_name}｜seed {unit_seed}｜事件{event_idx} {state}｜預估剩餘 {_format_remaining(remaining)}")
+
+    def _save_unit(unit):
+        if checkpoint_callback:
+            checkpoint_callback(unit, done + 1, total_runs)
 
     for name, cfg in items:
         actual_seeds = requested_seeds if name in stochastic_names else requested_seeds[:1]
@@ -377,7 +466,8 @@ def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[st
             result = _strategy_event_run(
                 session_bars, name, cfg, cost, seed, initial_capital, windows,
                 warmup_trade_days, simulation_config, strategy_requirements[name],
-                timeframe_cache, validation)
+                timeframe_cache, validation, resume_units=resume_units,
+                unit_complete_callback=_save_unit, progress_unit_callback=_unit_progress)
             actual_results.append(result)
             row = _metric_row(name, seed, result["metrics"])
             mt = result.get("multi_timeframe") or {}
@@ -388,13 +478,6 @@ def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[st
             })
             rows.append(row)
             event_rows.extend(result["event_rows"])
-            done += len(windows)
-            if progress_callback:
-                elapsed = max(time.perf_counter() - started, 1e-9)
-                remaining = (elapsed / max(done, 1)) * (total_runs - done)
-                progress_callback(
-                    done / max(total_runs, 1),
-                    f"{done}/{total_runs}｜{name}｜seed {seed}｜事件區間｜預估剩餘 {_format_remaining(remaining)}")
 
         # 代表路徑選總損益最接近該策略實際seed中位數者。
         pnl_values = [float(x["metrics"].get("總損益(元)", 0.0) or 0.0) for x in actual_results]
@@ -445,4 +528,6 @@ def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[st
         ],
         "event_warmup_trade_days": int(warmup_trade_days),
         "actual_strategy_event_runs": int(total_runs),
+        "event_checkpoint_total_units": int(total_runs),
+        "event_checkpoint_resumed_units": int(resumed_units),
     }
