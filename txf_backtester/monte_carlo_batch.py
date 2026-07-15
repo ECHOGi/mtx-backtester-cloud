@@ -2,6 +2,7 @@
 """多策略、多隨機路徑批次回測；每個 seed 的模擬 K 線由所有策略共用。"""
 from __future__ import annotations
 
+import copy
 import time
 
 import numpy as np
@@ -189,4 +190,259 @@ def run_batch_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[str, dic
         "required_timeframes": sorted(required_timeframes),
         "deterministic_1d_fast_mode": deterministic_1d,
         "simulation_validation": validation,
+    }
+
+
+
+def _normalize_event_windows(session_bars: pd.DataFrame, event_windows: list[dict]) -> list[dict]:
+    if not event_windows:
+        raise ValueError("事件區間模式缺少 event_windows")
+    dates = pd.to_datetime(session_bars["trade_date"], errors="coerce").dt.normalize()
+    data_min, data_max = dates.min(), dates.max()
+    out = []
+    for i, item in enumerate(event_windows, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"event_windows 第{i}項必須是物件")
+        start = pd.Timestamp(item.get("start")).normalize()
+        end = pd.Timestamp(item.get("end")).normalize()
+        if pd.isna(start) or pd.isna(end) or start > end:
+            raise ValueError(f"event_windows 第{i}項日期無效")
+        start = max(start, data_min)
+        end = min(end, data_max)
+        if start > end:
+            continue
+        out.append({
+            "label": str(item.get("label") or f"事件{i}"),
+            "start": start,
+            "end": end,
+        })
+    out.sort(key=lambda x: x["start"])
+    if not out:
+        raise ValueError("事件區間與現有資料沒有交集")
+    for prev, cur in zip(out, out[1:]):
+        if cur["start"] <= prev["end"]:
+            raise ValueError(f"事件區間不可重疊：{prev['label']}／{cur['label']}")
+    return out
+
+
+def _event_source_slice(session_bars: pd.DataFrame, event: dict, warmup_trade_days: int) -> pd.DataFrame:
+    src = session_bars.copy()
+    src["_trade_day"] = pd.to_datetime(src["trade_date"], errors="coerce").dt.normalize()
+    unique_days = pd.Index(sorted(src["_trade_day"].dropna().unique()))
+    start_pos = int(unique_days.searchsorted(event["start"], side="left"))
+    warm_pos = max(start_pos - max(int(warmup_trade_days), 0), 0)
+    warm_start = pd.Timestamp(unique_days[warm_pos]) if len(unique_days) else event["start"]
+    mask = (src["_trade_day"] >= warm_start) & (src["_trade_day"] <= event["end"])
+    out = src.loc[mask].drop(columns=["_trade_day"]).reset_index(drop=True)
+    if out.empty:
+        raise ValueError(f"事件區間沒有資料：{event['label']}")
+    return out
+
+
+def _slice_event_frame(frame: pd.DataFrame, event: dict) -> pd.DataFrame:
+    out = frame.copy()
+    if "trade_date" in out.columns:
+        days = pd.to_datetime(out["trade_date"], errors="coerce").dt.normalize()
+    else:
+        days = pd.to_datetime(out["datetime"], errors="coerce").dt.normalize()
+    out = out[(days >= event["start"]) & (days <= event["end"])].reset_index(drop=True)
+    if len(out) < 2:
+        raise ValueError(f"事件區間執行資料不足：{event['label']}")
+    return out
+
+
+def _strategy_event_run(session_bars: pd.DataFrame, name: str, cfg: dict, cost: CostModel,
+                        seed: int, initial_capital: float, event_windows: list[dict],
+                        warmup_trade_days: int, simulation_config: SimulationConfig | None,
+                        required_timeframes: set[str], timeframe_cache: dict,
+                        validation: dict) -> dict:
+    current_capital = float(initial_capital)
+    all_trades, all_equity, market_parts, event_rows = [], [], [], []
+    last_frame = pd.DataFrame()
+    last_mt_info = {}
+
+    for event_idx, event in enumerate(event_windows, 1):
+        cache_key = (int(seed), int(event_idx), tuple(sorted(required_timeframes)))
+        if cache_key not in timeframe_cache:
+            source = _event_source_slice(session_bars, event, warmup_trade_days)
+            tfs = build_simulated_timeframes(
+                source, int(seed), simulation_config, required=required_timeframes)
+            timeframe_cache[cache_key] = (source, tfs)
+            if "30m" in tfs:
+                errors = validate_simulation(source, tfs["30m"])
+                validation["checked_event_paths"] += 1
+                if errors:
+                    validation["valid"] = False
+                    validation["error_count"] += len(errors)
+                    validation["errors"].extend(errors[:10])
+        source, tfs = timeframe_cache[cache_key]
+        frame, params, mt_info = prepare_execution_frame(tfs, cfg)
+        event_frame = _slice_event_frame(frame, event)
+        params.position_sizing_capital = float(current_capital)
+        trades, equity = run_backtest(event_frame, cost, params)
+
+        daily_event = _slice_event_frame(tfs["1D"], event)
+        event_metrics = compute_metrics(
+            trades, equity, margin_reference=cost.original_margin_amount,
+            quantity=cost.quantity, initial_capital=current_capital,
+            market_data=daily_event)
+        pnl = float(event_metrics.get("總損益(元)", 0.0) or 0.0)
+
+        trades = trades.copy()
+        if not trades.empty:
+            trades.insert(0, "事件", event["label"])
+            trades.insert(1, "事件序號", event_idx)
+            all_trades.append(trades)
+        equity = equity.copy()
+        if not equity.empty:
+            equity.insert(0, "事件", event["label"])
+            equity.insert(1, "事件序號", event_idx)
+            # 每個事件承接前一事件的期末資金；全域 equity 以原始本金為基準。
+            equity["equity"] = pd.to_numeric(equity["account_equity"], errors="coerce") - float(initial_capital)
+            all_equity.append(equity)
+        market_parts.append(daily_event)
+        event_rows.append({
+            "策略名稱": name,
+            "seed": int(seed),
+            "事件": event["label"],
+            "事件序號": int(event_idx),
+            "開始日": str(event["start"].date()),
+            "結束日": str(event["end"].date()),
+            "事件起始資金(元)": round(current_capital, 0),
+            "事件期末資金(元)": round(current_capital + pnl, 0),
+            "總損益(元)": round(pnl, 0),
+            "最大回撤(元)": event_metrics.get("最大回撤(元)", 0.0),
+            "最大回撤率(%)": event_metrics.get("策略標準最大回撤率(%)", event_metrics.get("最大回撤(%)", np.nan)),
+            "報酬回撤比": event_metrics.get("報酬回撤比", np.nan),
+            "獲利因子": event_metrics.get("獲利因子", np.nan),
+            "交易次數": event_metrics.get("交易次數", 0),
+            "勝率(%)": event_metrics.get("勝率(%)", 0.0),
+            "期末強制平倉損益(元)": event_metrics.get("期末強制平倉損益(元)", 0.0),
+            "斷頭次數": event_metrics.get("斷頭次數", 0),
+        })
+        current_capital += pnl
+        last_frame = event_frame
+        last_mt_info = mt_info
+
+    trades_all = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+    equity_all = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()
+    market_all = pd.concat(market_parts, ignore_index=True) if market_parts else pd.DataFrame()
+    metrics = compute_metrics(
+        trades_all, equity_all, margin_reference=cost.original_margin_amount,
+        quantity=cost.quantity, initial_capital=float(initial_capital),
+        market_data=market_all)
+    return {
+        "seed": int(seed), "config": cfg, "frame": last_frame,
+        "trades": trades_all, "equity": equity_all, "metrics": metrics,
+        "yearly": yearly_stats(trades_all, equity_all),
+        "multi_timeframe": last_mt_info,
+        "event_rows": event_rows,
+    }
+
+
+def run_batch_event_monte_carlo(session_bars: pd.DataFrame, items: list[tuple[str, dict]],
+                                cost: CostModel, seeds: list[int], initial_capital: float,
+                                event_windows: list[dict], warmup_trade_days: int = 140,
+                                simulation_config: SimulationConfig | None = None,
+                                progress_callback=None) -> dict:
+    """只在指定事件區間回測；暖機資料僅供指標形成，不允許在事件外進場。"""
+    windows = _normalize_event_windows(session_bars, event_windows)
+    requested_seeds = [int(x) for x in seeds] or [42]
+    strategy_requirements = {
+        name: set(required_timeframes_for_config(cfg)) | {"1D"}
+        for name, cfg in items
+    }
+    stochastic_names = {
+        name for name, req in strategy_requirements.items() if req != {"1D"}
+    }
+    total_runs = sum((len(requested_seeds) if name in stochastic_names else 1) * len(windows)
+                     for name, _ in items)
+    done = 0
+    started = time.perf_counter()
+    rows, event_rows, representatives = [], [], {}
+    timeframe_cache = {}
+    validation = {
+        "status": "不適用" if not stochastic_names else "待檢查",
+        "valid": None if not stochastic_names else True,
+        "checked_seeds": 0,
+        "checked_event_paths": 0,
+        "error_count": 0,
+        "errors": [],
+    }
+
+    for name, cfg in items:
+        actual_seeds = requested_seeds if name in stochastic_names else requested_seeds[:1]
+        actual_results = []
+        for seed in actual_seeds:
+            result = _strategy_event_run(
+                session_bars, name, cfg, cost, seed, initial_capital, windows,
+                warmup_trade_days, simulation_config, strategy_requirements[name],
+                timeframe_cache, validation)
+            actual_results.append(result)
+            row = _metric_row(name, seed, result["metrics"])
+            mt = result.get("multi_timeframe") or {}
+            row.update({
+                "執行週期": mt.get("execution_timeframe", cfg.get("timeframe", "1D")),
+                "多單訊號週期": mt.get("long_signal_timeframe", cfg.get("timeframe", "1D")),
+                "空單訊號週期": mt.get("short_signal_timeframe", cfg.get("timeframe", "1D")),
+            })
+            rows.append(row)
+            event_rows.extend(result["event_rows"])
+            done += len(windows)
+            if progress_callback:
+                elapsed = max(time.perf_counter() - started, 1e-9)
+                remaining = (elapsed / max(done, 1)) * (total_runs - done)
+                progress_callback(
+                    done / max(total_runs, 1),
+                    f"{done}/{total_runs}｜{name}｜seed {seed}｜事件區間｜預估剩餘 {_format_remaining(remaining)}")
+
+        # 代表路徑選總損益最接近該策略實際seed中位數者。
+        pnl_values = [float(x["metrics"].get("總損益(元)", 0.0) or 0.0) for x in actual_results]
+        median_pnl = float(np.median(pnl_values)) if pnl_values else 0.0
+        rep_index = int(np.argmin([abs(x - median_pnl) for x in pnl_values])) if pnl_values else 0
+        representatives[name] = actual_results[rep_index]
+
+        # 純日K策略不受seed影響；將同一結果複製成共同20條路徑，方便同表比較。
+        if name not in stochastic_names and len(requested_seeds) > 1:
+            template_row = rows[-1].copy()
+            template_events = [x.copy() for x in actual_results[0]["event_rows"]]
+            for seed in requested_seeds[1:]:
+                cloned = template_row.copy()
+                cloned["seed"] = int(seed)
+                rows.append(cloned)
+                for event_row in template_events:
+                    e = event_row.copy()
+                    e["seed"] = int(seed)
+                    event_rows.append(e)
+
+    if stochastic_names:
+        validation["checked_seeds"] = len(requested_seeds)
+        validation["status"] = "通過" if validation["valid"] else "失敗"
+
+    dist = pd.DataFrame(rows)
+    summaries = []
+    for name, _ in items:
+        grp = dist[dist["策略名稱"] == name].copy()
+        summaries.append({"策略名稱": name, **_summary(grp)})
+    compare = pd.DataFrame(summaries).sort_values(
+        ["報酬回撤比中位數", "總損益中位數", "最差路徑最大回撤"],
+        ascending=[False, False, False], kind="mergesort").reset_index(drop=True)
+
+    return {
+        "comparison": compare,
+        "distribution": dist,
+        "event_distribution": pd.DataFrame(event_rows),
+        "representatives": representatives,
+        "seeds": requested_seeds,
+        "requested_seeds": requested_seeds,
+        "required_timeframes": sorted(set().union(*strategy_requirements.values())),
+        "deterministic_1d_fast_mode": False,
+        "simulation_validation": validation,
+        "event_mode": True,
+        "event_windows": [
+            {"label": x["label"], "start": str(x["start"].date()), "end": str(x["end"].date())}
+            for x in windows
+        ],
+        "event_warmup_trade_days": int(warmup_trade_days),
+        "actual_strategy_event_runs": int(total_runs),
     }

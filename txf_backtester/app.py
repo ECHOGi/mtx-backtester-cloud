@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.7.0｜空單多週期研究版。
+"""MTX 台指期回測平台 v0.8.7.1｜空單事件區間加速版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -30,12 +30,12 @@ from data_loader import clean_data, load_folder
 from google_drive_uploader import (download_drive_file_bytes,
                                    list_json_files_in_drive_folder,
                                    upload_zip_result_to_drive)
-from monte_carlo_batch import run_batch_monte_carlo
+from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.7.0",
-    "release_name": "空單多週期研究版",
-    "build_id": "20260715-1",
+    "version": "v0.8.7.1",
+    "release_name": "空單事件區間加速版",
+    "build_id": "20260715-2",
 }
 try:
     _version_info = json.loads((Path(__file__).resolve().parent / "version.json").read_text(encoding="utf-8"))
@@ -246,6 +246,8 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("00_批次比較.csv", result["comparison"].to_csv(index=False).encode("utf-8-sig"))
         z.writestr("01_隨機路徑分布.csv", result["distribution"].to_csv(index=False).encode("utf-8-sig"))
+        if isinstance(result.get("event_distribution"), pd.DataFrame) and not result["event_distribution"].empty:
+            z.writestr("02_五次事件逐策略分布.csv", result["event_distribution"].to_csv(index=False).encode("utf-8-sig"))
         z.writestr("strategy_batch.json", raw_json.encode("utf-8"))
         z.writestr("02_執行設定.json", json.dumps(result.get("run_settings", {}), ensure_ascii=False, indent=2).encode("utf-8"))
         if isinstance(result.get("benchmark_data"), pd.DataFrame) and not result["benchmark_data"].empty:
@@ -269,6 +271,16 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
             f"- 斷頭檢查：{'啟用' if result.get('run_settings', {}).get('use_margin_call_check') else '停用'}",
             f"- 固定口數安全緩衝：{result.get('run_settings', {}).get('safety_buffer_amount', 0):,.0f} 元",
         ]
+        if result.get("event_mode"):
+            readme += [
+                "- 本批採事件區間加速回測；只允許在指定五次事件期間進場。",
+                f"- 指標暖機：每個事件向前保留 {result.get('event_warmup_trade_days', 0)} 個交易日。",
+                "- 各事件結束時仍持倉者以事件最後一根收盤強制回補，避免跨事件持倉。",
+                "- 事件區間：" + "；".join(
+                    f"{x.get('label')} {x.get('start')}～{x.get('end')}"
+                    for x in result.get("event_windows", [])),
+                "- 事件模式不執行00631L比較；找到穩定空單後再回完整期間及多空合併。",
+            ]
         if result.get("deterministic_1d_fast_mode"):
             readme.append("- 純日K屬確定性回測，已自動縮為單路徑，避免重複計算相同結果。")
         else:
@@ -550,10 +562,25 @@ if run_clicked:
         if not raw_json.strip():
             raise ValueError("尚未載入策略 JSON")
         batch_name, items, batch_meta = parse_strategy_batch(raw_json, symbol=symbol)
+        event_windows = batch_meta.get("event_windows") or []
+        event_mode = bool(event_windows)
+        event_warmup_trade_days = int(batch_meta.get("event_warmup_trade_days", 140) or 140)
+        if event_mode and research_mode.startswith("多截止日"):
+            raise ValueError("事件區間批次請使用標準回測，不與多截止日未來情境同時執行")
+        benchmark_enabled_for_run = bool(benchmark_enabled and not event_mode)
+        if event_mode:
+            labels = "、".join(str(x.get("label") or "事件") for x in event_windows)
+            st.sidebar.info(f"事件區間加速模式：{labels}｜短K只生成指定區間與暖機資料")
+            if benchmark_enabled:
+                st.sidebar.caption("事件初選階段自動略過00631L；完整期間決選時再比較。")
         active_batch_name = batch_name
         st.sidebar.caption(f"執行中批次：{batch_name}")
-        filtered = preview[(pd.to_datetime(preview["trade_date"]).dt.date >= start_date) &
-                           (pd.to_datetime(preview["trade_date"]).dt.date <= end_date)].reset_index(drop=True)
+        if event_mode:
+            # 事件批次以JSON內日期為唯一口徑，避免側欄完整期間或手動日期誤裁掉事件暖機資料。
+            filtered = preview.reset_index(drop=True)
+        else:
+            filtered = preview[(pd.to_datetime(preview["trade_date"]).dt.date >= start_date) &
+                               (pd.to_datetime(preview["trade_date"]).dt.date <= end_date)].reset_index(drop=True)
         if len(filtered) < 40:
             raise ValueError("回測區間資料不足40個時段")
         final_items = []
@@ -590,8 +617,8 @@ if run_clicked:
                 "initial_capital": float(initial_capital),
                 "symbol": symbol, "fee": float(fee), "slippage": float(slippage),
                 "use_tax": bool(use_tax), "margin_check": bool(use_margin_call_check),
-                "benchmark_enabled": bool(benchmark_enabled),
-                "benchmark_source": benchmark_source if benchmark_enabled else "停用",
+                "benchmark_enabled": bool(benchmark_enabled_for_run),
+                "benchmark_source": benchmark_source if benchmark_enabled_for_run else "停用",
                 "benchmark_fee_rate": float(benchmark_fee_rate),
             }
             checkpoint_signature = make_signature(checkpoint_payload)
@@ -624,13 +651,19 @@ if run_clicked:
             use_margin_call_check=bool(use_margin_call_check),
             safety_buffer_amount=safety_buffer_amount)
         progress = st.sidebar.progress(0, text="準備回測")
-        result = run_batch_monte_carlo(
-            filtered, final_items, cost, seeds, float(initial_capital),
-            progress_callback=lambda pct, txt: progress.progress(min(pct * 0.35, 0.35), text="歷史回測｜" + txt))
+        if event_mode:
+            result = run_batch_event_monte_carlo(
+                filtered, final_items, cost, seeds, float(initial_capital),
+                event_windows=event_windows, warmup_trade_days=event_warmup_trade_days,
+                progress_callback=lambda pct, txt: progress.progress(pct, text="五次事件回測｜" + txt))
+        else:
+            result = run_batch_monte_carlo(
+                filtered, final_items, cost, seeds, float(initial_capital),
+                progress_callback=lambda pct, txt: progress.progress(min(pct * 0.35, 0.35), text="歷史回測｜" + txt))
 
         benchmark_df = pd.DataFrame()
         benchmark_info = None
-        if benchmark_enabled:
+        if benchmark_enabled_for_run:
             if benchmark_source == "上傳00631L CSV":
                 uploaded_benchmark = _parse_benchmark_upload(benchmark_upload)
                 if uploaded_benchmark is None:
@@ -683,7 +716,7 @@ if run_clicked:
 
             scenario = run_cutoff_scenarios(
                 filtered, final_items, cost, float(initial_capital), selected_cutoffs,
-                benchmark_df=benchmark_df if benchmark_enabled else None,
+                benchmark_df=benchmark_df if benchmark_enabled_for_run else None,
                 benchmark_buy_fee_rate=float(benchmark_fee_rate),
                 config=ScenarioConfig(paths_per_state=int(future_paths_per_state), seed=int(base_seed)),
                 progress_callback=lambda pct, txt: progress.progress(0.35 + pct * 0.65, text=txt),
@@ -706,14 +739,17 @@ if run_clicked:
             "position_compounding_ui": bool(position_compounding),
             "timeframe_mode": timeframe_mode,
             "research_mode": research_mode,
-            "benchmark_enabled": bool(benchmark_enabled),
-            "benchmark_source": benchmark_source if benchmark_enabled else "停用",
+            "benchmark_enabled": bool(benchmark_enabled_for_run),
+            "benchmark_source": benchmark_source if benchmark_enabled_for_run else "停用",
             "benchmark_buy_fee_rate": float(benchmark_fee_rate),
             "scenario_cutoff_dates": [str(pd.Timestamp(x).date()) for x in selected_cutoffs],
             "scenario_paths_per_state": int(future_paths_per_state),
             "expanded_strategy_count": len(final_items),
             "scenario_checkpoint_signature": checkpoint_signature,
             "scenario_resume_rows_loaded": int(len(resume_distribution)),
+            "event_mode": bool(event_mode),
+            "event_windows": event_windows,
+            "event_warmup_trade_days": int(event_warmup_trade_days),
         }
         zip_bytes = _result_zip(batch_name, raw_json, result)
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
@@ -721,7 +757,8 @@ if run_clicked:
         st.session_state["v086_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
-            "start": str(start_date), "end": str(end_date),
+            "start": "五次指定事件" if event_mode else str(start_date),
+            "end": "事件區間模式" if event_mode else str(end_date),
             "requested_paths": int(path_count), "effective_paths": len(result["seeds"]),
             "initial_capital": float(initial_capital),
         }
@@ -787,6 +824,8 @@ else:
     deterministic = bool(result.get("deterministic_1d_fast_mode"))
     best = compare.iloc[0] if not compare.empty else None
     st.caption(f"{state['batch_name']}｜{state['start']}～{state['end']}｜實際{state['effective_paths']}條盤中路徑（原設定{state['requested_paths']}）")
+    if result.get("event_mode"):
+        st.info("本批只回測五次指定下跌事件；每個事件另取暖機資料形成指標，但事件外不進場，也不跨事件持倉。")
 
     badge_html = []
     if deterministic:
@@ -946,6 +985,18 @@ else:
                 st.dataframe(state_summary, use_container_width=True, hide_index=True)
         with st.expander("完整情境路徑明細", expanded=False):
             st.dataframe(scenario["distribution"], use_container_width=True, hide_index=True)
+
+    event_dist = result.get("event_distribution")
+    if isinstance(event_dist, pd.DataFrame) and not event_dist.empty:
+        st.subheader("五次事件逐策略結果")
+        event_summary = event_dist.groupby(["策略名稱", "事件"], as_index=False).agg(
+            總損益P25=("總損益(元)", lambda x: pd.to_numeric(x, errors="coerce").quantile(.25)),
+            總損益P50=("總損益(元)", lambda x: pd.to_numeric(x, errors="coerce").quantile(.50)),
+            總損益P75=("總損益(元)", lambda x: pd.to_numeric(x, errors="coerce").quantile(.75)),
+            最大回撤率P50=("最大回撤率(%)", lambda x: pd.to_numeric(x, errors="coerce").quantile(.50)),
+            交易次數P50=("交易次數", lambda x: pd.to_numeric(x, errors="coerce").quantile(.50)),
+        )
+        st.dataframe(event_summary, use_container_width=True, hide_index=True)
 
     if validation.get("status") == "失敗" and validation.get("errors"):
         with st.expander("模擬還原錯誤", expanded=True):
