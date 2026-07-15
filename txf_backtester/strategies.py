@@ -194,6 +194,9 @@ class StrategyParams:
     use_trailing_stop: bool = False
     trailing_points: float = 150.0
     use_signal_exit: bool = False   # v0.3.4 條件出場（策略層產生訊號欄位）
+    # v0.8.7.6：相反方向進場訊號可作為持倉方向的條件出場；
+    # 可選擇不受 minimum_holding_bars 限制，用於多空整合優先權測試。
+    opposite_signal_exit_bypass_minimum_holding: bool = False
     # ---- 顯示用指標參數 ----
     kd_period: int = 9
     rsi_period: int = 14
@@ -741,6 +744,48 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
             block = spec.get("block") or spec
             signal, _ = evaluate_combo(out, block)
             out[f"exit_{direction_name}_group_{idx}_signal"] = signal.fillna(False)
+
+    # v0.8.7.6：相反方向進場訊號可觸發目前持倉的條件出場。
+    # 只使用已完成當根的原始／過濾後進場群組訊號，不使用未來資料。
+    # 範例：
+    # {"priority_direction":"short", "exit_direction":"long",
+    #  "allowed_entry_groups":[1,2]}
+    opposite_policy = cfg.get("opposite_signal_exit_policy") or {}
+    if isinstance(opposite_policy, dict) and opposite_policy:
+        priority_direction = str(opposite_policy.get("priority_direction", "short")).lower()
+        exit_direction = str(opposite_policy.get(
+            "exit_direction", "long" if priority_direction == "short" else "short")).lower()
+        source_groups = short_groups if priority_direction == "short" else long_groups
+        raw_allowed = opposite_policy.get("allowed_entry_groups")
+        if raw_allowed in (None, [], ()):
+            allowed_indices = list(range(len(source_groups)))
+        else:
+            allowed_indices = []
+            for raw_idx in raw_allowed or []:
+                try:
+                    idx = int(raw_idx) - 1
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= idx < len(source_groups):
+                    allowed_indices.append(idx)
+        opposite_sig = pd.Series(False, index=out.index)
+        opposite_reason = pd.Series("", index=out.index, dtype="object")
+        for idx in allowed_indices:
+            sig_i = source_groups[idx].fillna(False)
+            opposite_sig = opposite_sig | sig_i
+            label = f"opposite_{priority_direction}_signal_group_{idx + 1}"
+            mask = sig_i & (opposite_reason == "")
+            opposite_reason.loc[mask] = label
+        if exit_direction in {"long", "short"}:
+            opposite_col = f"exit_{exit_direction}_opposite_signal"
+            opposite_reason_col = f"exit_{exit_direction}_opposite_reason"
+            out[opposite_col] = opposite_sig.fillna(False)
+            out[opposite_reason_col] = opposite_reason.where(opposite_sig, "")
+            generic_col = f"exit_{exit_direction}_signal"
+            if generic_col in out.columns:
+                out[generic_col] = (out[generic_col].fillna(False) | opposite_sig).fillna(False)
+            else:
+                out[generic_col] = opposite_sig.fillna(False)
 
     # v0.8.7.0：R倍數部分出場所需的訊號根均線參考值。
     r_def = cfg.get("r_definition") or {}

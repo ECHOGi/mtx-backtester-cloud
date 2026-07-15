@@ -1018,20 +1018,36 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             #     exit_long_signal / exit_short_signal 欄位時才會啟用，
             #     否則完全不影響既有出場行為（self_check 8 cases 不變）。
             raw_signal_exit = False
+            raw_opposite_exit = False
             signal_reason = "signal_exit"
             if getattr(active_p, "use_signal_exit", False):
+                direction_name = "long" if d == 1 else "short"
+                opposite_col = f"exit_{direction_name}_opposite_signal"
+                opposite_reason_col = f"exit_{direction_name}_opposite_reason"
+                raw_opposite_exit = bool(
+                    opposite_col in df.columns and row.get(opposite_col, False))
+                if raw_opposite_exit:
+                    reason_value = row.get(opposite_reason_col, "")
+                    signal_reason = (str(reason_value) if pd.notna(reason_value)
+                                     and str(reason_value).strip() else "opposite_signal_exit")
                 group_idx = pos.get("entry_group_index")
                 group_col = None
                 if group_idx is not None:
-                    group_col = f"exit_{'long' if d == 1 else 'short'}_group_{int(group_idx)}_signal"
+                    group_col = f"exit_{direction_name}_group_{int(group_idx)}_signal"
                 if group_col and group_col in df.columns:
-                    raw_signal_exit = bool(row.get(group_col, False))
-                    signal_reason = f"signal_exit_group_{int(group_idx)}"
+                    raw_group_exit = bool(row.get(group_col, False))
+                    raw_signal_exit = raw_opposite_exit or raw_group_exit
+                    if raw_group_exit and not raw_opposite_exit:
+                        signal_reason = f"signal_exit_group_{int(group_idx)}"
                 else:
-                    sig_col = "exit_long_signal" if d == 1 else "exit_short_signal"
+                    sig_col = f"exit_{direction_name}_signal"
                     raw_signal_exit = bool(sig_col in df.columns and row.get(sig_col, False))
+            bypass_min_hold = bool(
+                raw_opposite_exit
+                and getattr(active_p, "opposite_signal_exit_bypass_minimum_holding", False))
+            signal_allowed = raw_signal_exit and (discretionary_exit_allowed or bypass_min_hold)
             signal_ok = _confirmed_exit(
-                pos, "signal", raw_signal_exit and discretionary_exit_allowed,
+                pos, "signal", signal_allowed,
                 getattr(active_p, "signal_exit_confirmation_bars", 1))
             if exit_price is None and signal_ok:
                 exit_price, exit_reason = row["close"], signal_reason
