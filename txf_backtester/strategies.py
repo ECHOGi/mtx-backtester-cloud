@@ -180,7 +180,7 @@ class StrategyParams:
     partial_r_multiple: float = 3.0
     partial_exit_fraction: float = 0.5
     initial_r_atr_floor_multiple: float = 0.5
-    # v0.8.7.3：獲利成熟後的快速反彈退出。
+    # v0.8.7.4：獲利成熟後或無門檻的快速反彈退出（activation=0 表示不設門檻）。
     # 先以持倉最大順向浮盈 / 進場 ATR 達到門檻，再判斷單日收盤反向漲跌幅；
     # 收盤確認後於下一根開盤退出，避免使用尚未完成K棒。
     use_mfe_rebound_exit: bool = False

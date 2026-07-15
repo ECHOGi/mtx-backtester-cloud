@@ -1063,9 +1063,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 if holding_now >= max_bars and pos.get("pending_max_holding_exit_i") is None and i < n - 1:
                     pos["pending_max_holding_exit_i"] = i
 
-            # v0.8.7.3 獲利成熟後快速反彈退出。
-            # 先確認最大順向浮盈已達進場ATR倍數，再以單日收盤反向漲跌幅觸發；
-            # 收盤確認後於下一根開盤執行。
+            # v0.8.7.4 獲利成熟／無門檻快速反彈退出。
+            # activation>0 時先確認最大順向浮盈達進場ATR倍數；activation=0 時不設獲利門檻。
+            # 再以單日收盤反向漲跌幅觸發，收盤確認後於下一根開盤執行。
             if exit_price is None and bool(getattr(active_p, "use_mfe_rebound_exit", False)):
                 entry_atr_value = _positive_float(pos.get("entry_atr"))
                 activation = max(float(getattr(
@@ -1085,8 +1085,11 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     and ((d == -1 and close_return_pct >= rebound_pct)
                          or (d == 1 and close_return_pct <= -rebound_pct))
                 )
-                if (mfe_multiple is not None and activation > 0
-                        and mfe_multiple >= activation and rebound_hit
+                activation_reached = bool(
+                    activation <= 0
+                    or (mfe_multiple is not None and mfe_multiple >= activation)
+                )
+                if (activation_reached and rebound_hit
                         and pos.get("pending_mfe_rebound_exit_i") is None and i < n - 1):
                     pos["pending_mfe_rebound_exit_i"] = i
                     pos["mfe_rebound_trigger_mfe_atr_multiple"] = mfe_multiple
