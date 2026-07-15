@@ -15,7 +15,8 @@ import pandas as pd
 
 from backtester import CostModel, run_backtest
 from metrics import compute_metrics
-from strategies import params_from_config, run_strategy_config
+from strategies import (add_indicator_columns, evaluate_combo, params_from_config,
+                        run_strategy_config)
 from synthetic_timeframes import SimulationConfig, build_simulated_timeframes
 
 
@@ -47,6 +48,12 @@ def required_timeframes_for_config(cfg: dict) -> set[str]:
         required.add(_tf_name(mt.get("short_signal_timeframe"), default_tf))
         required.add(_tf_name(mt.get("long_exit_signal_timeframe"), execution_tf))
         required.add(_tf_name(mt.get("short_exit_signal_timeframe"), execution_tf))
+        for key in ("entry_long_components", "entry_short_components",
+                    "exit_long_components", "exit_short_components"):
+            spec = mt.get(key) or {}
+            for component in (spec.get("components") or []):
+                if isinstance(component, dict):
+                    required.add(_tf_name(component.get("timeframe"), default_tf))
     else:
         required.add(default_tf)
     return required
@@ -141,6 +148,87 @@ def _exit_signal_frame(data: pd.DataFrame, cfg: dict, column: str) -> pd.DataFra
     return sig[["datetime", column]].copy()
 
 
+def _component_signal_frame(data: pd.DataFrame, cfg: dict, block: dict) -> pd.DataFrame:
+    """計算單一週期條件元件，回傳 datetime/signal/atr。"""
+    params = params_from_config(cfg)
+    enriched = add_indicator_columns(data.copy(), params, cfg)
+    signal, _ = evaluate_combo(enriched, block or {})
+    out = pd.DataFrame({
+        "datetime": pd.to_datetime(enriched["datetime"]),
+        "signal": signal.fillna(False).astype(bool),
+        "atr": pd.to_numeric(enriched.get("atr"), errors="coerce"),
+    })
+    return out.sort_values("datetime").reset_index(drop=True)
+
+
+def _align_component(execution: pd.DataFrame, signal_df: pd.DataFrame, mode: str = "state"):
+    """state=沿用最近完成高週期狀態；trigger=只在完成時刻產生一次脈衝。"""
+    left = pd.DataFrame({"datetime": pd.to_datetime(execution["datetime"])})
+    sig = pd.Series(False, index=execution.index, dtype=bool)
+    atr = pd.Series(np.nan, index=execution.index, dtype=float)
+    if signal_df.empty or execution.empty:
+        return sig, atr
+    mode = str(mode or "state").lower()
+    if mode == "trigger":
+        exec_times = left["datetime"].to_numpy(dtype="datetime64[ns]")
+        for _, row in signal_df.loc[signal_df["signal"].fillna(False)].iterrows():
+            idx = int(np.searchsorted(exec_times, np.datetime64(pd.Timestamp(row["datetime"])), side="left"))
+            if idx < len(execution):
+                sig.iloc[idx] = True
+        # ATR仍以最近完成高週期值對齊，供部位與停損使用。
+        merged = pd.merge_asof(left.sort_values("datetime"),
+                               signal_df[["datetime", "atr"]].sort_values("datetime"),
+                               on="datetime", direction="backward")
+        atr.iloc[:] = pd.to_numeric(merged["atr"], errors="coerce").to_numpy()
+        return sig, atr
+    merged = pd.merge_asof(left.sort_values("datetime"),
+                           signal_df[["datetime", "signal", "atr"]].sort_values("datetime"),
+                           on="datetime", direction="backward")
+    sig.iloc[:] = merged["signal"].astype("boolean").fillna(False).astype(bool).to_numpy()
+    atr.iloc[:] = pd.to_numeric(merged["atr"], errors="coerce").to_numpy()
+    return sig, atr
+
+
+def _apply_mtf_components(base: pd.DataFrame, timeframes: dict[str, pd.DataFrame], cfg: dict,
+                          spec: dict, output_column: str, reason_column: str | None = None):
+    """把跨週期元件以AND/OR組合後寫入執行週期資料。"""
+    components = list((spec or {}).get("components") or [])
+    if not components:
+        return base
+    logic = str((spec or {}).get("logic", "AND")).upper()
+    if logic not in {"AND", "OR"}:
+        raise ValueError(f"跨週期元件logic需為AND/OR，收到 {logic}")
+    combined = pd.Series(True if logic == "AND" else False, index=base.index, dtype=bool)
+    atr_candidates = []
+    labels = []
+    for component in components:
+        tf = _tf_name(component.get("timeframe"), cfg.get("timeframe", "1D"))
+        if tf not in timeframes:
+            raise ValueError(f"跨週期元件缺少 {tf} 資料")
+        block = component.get("block") or {
+            "logic": component.get("logic", "AND"),
+            "conditions": component.get("conditions") or [],
+            "ever": component.get("ever"),
+            "exclude": component.get("exclude"),
+        }
+        frame = _component_signal_frame(timeframes[tf], cfg, block)
+        aligned, aligned_atr = _align_component(base, frame, component.get("mode", "state"))
+        combined = (combined & aligned) if logic == "AND" else (combined | aligned)
+        atr_candidates.append(aligned_atr)
+        labels.append(f"{tf}:{component.get('mode','state')}")
+    base[output_column] = combined.fillna(False)
+    if reason_column is not None:
+        base[reason_column] = np.where(base[output_column], " MTF ".join(labels), "")
+        side = "long" if output_column.startswith("long") else "short"
+        base[f"{side}_entry_group_1"] = base[output_column].fillna(False)
+        base[f"{side}_entry_group_reason_1"] = base[reason_column]
+        atr_out = pd.Series(np.nan, index=base.index, dtype=float)
+        for candidate in atr_candidates:
+            atr_out = atr_out.where(atr_out.notna(), candidate)
+        base[f"{side}_entry_atr"] = atr_out
+    return base
+
+
 def prepare_execution_frame(timeframes: dict[str, pd.DataFrame], cfg: dict, indicator_cache: dict | None = None):
     """產生可直接交給 backtester 的執行週期資料。"""
     mt = cfg.get("multi_timeframe") or {}
@@ -168,17 +256,35 @@ def prepare_execution_frame(timeframes: dict[str, pd.DataFrame], cfg: dict, indi
             "short_exit_signal_timeframe": execution_tf,
         }
 
-    # 先清除執行週期自身的進場，再由高週期訊號覆寫；出場指標與條件仍保留。
-    long_sig, _ = _direction_signal_frame(timeframes[long_tf], cfg, "long")
-    short_sig, _ = _direction_signal_frame(timeframes[short_tf], cfg, "short")
-    base = _align_signals(base, long_sig, "long")
-    base = _align_signals(base, short_sig, "short")
+    # 先清除執行週期自身的進場，再由高週期訊號或跨週期元件覆寫。
+    long_components = mt.get("entry_long_components") or {}
+    short_components = mt.get("entry_short_components") or {}
+    if long_components.get("components"):
+        base = _apply_mtf_components(base, timeframes, cfg, long_components,
+                                     "long_entry", "long_entry_reasons")
+    else:
+        long_sig, _ = _direction_signal_frame(timeframes[long_tf], cfg, "long")
+        base = _align_signals(base, long_sig, "long")
+    if short_components.get("components"):
+        base = _apply_mtf_components(base, timeframes, cfg, short_components,
+                                     "short_entry", "short_entry_reasons")
+    else:
+        short_sig, _ = _direction_signal_frame(timeframes[short_tf], cfg, "short")
+        base = _align_signals(base, short_sig, "short")
 
-    # 條件出場可使用不同高週期；盤中停損與價格型出場仍由 execution_tf 監控。
-    if cfg.get("exit_long_block") and long_exit_tf != execution_tf:
+    # 條件出場可由單一高週期或跨週期OR/AND元件組合。
+    long_exit_components = mt.get("exit_long_components") or {}
+    short_exit_components = mt.get("exit_short_components") or {}
+    if long_exit_components.get("components"):
+        base = _apply_mtf_components(base, timeframes, cfg, long_exit_components,
+                                     "exit_long_signal")
+    elif cfg.get("exit_long_block") and long_exit_tf != execution_tf:
         base = _align_exit_signal(base, _exit_signal_frame(
             timeframes[long_exit_tf], cfg, "exit_long_signal"), "exit_long_signal")
-    if cfg.get("exit_short_block") and short_exit_tf != execution_tf:
+    if short_exit_components.get("components"):
+        base = _apply_mtf_components(base, timeframes, cfg, short_exit_components,
+                                     "exit_short_signal")
+    elif cfg.get("exit_short_block") and short_exit_tf != execution_tf:
         base = _align_exit_signal(base, _exit_signal_frame(
             timeframes[short_exit_tf], cfg, "exit_short_signal"), "exit_short_signal")
 
@@ -251,9 +357,11 @@ def run_monte_carlo(session_bars: pd.DataFrame, cfg: dict, cost: CostModel,
         "profitable_path_ratio_pct": round(float((pnl > 0).mean() * 100), 2),
         "median_total_pnl": round(q("total_pnl", 0.50) or 0.0, 1),
         "p25_total_pnl": round(q("total_pnl", 0.25) or 0.0, 1),
+        "p75_total_pnl": round(q("total_pnl", 0.75) or 0.0, 1),
         "p10_total_pnl": round(q("total_pnl", 0.10) or 0.0, 1),
         "median_return_drawdown_ratio": round(q("return_drawdown_ratio", 0.50) or 0.0, 3),
         "p25_return_drawdown_ratio": round(q("return_drawdown_ratio", 0.25) or 0.0, 3),
+        "p75_return_drawdown_ratio": round(q("return_drawdown_ratio", 0.75) or 0.0, 3),
         "worst_max_drawdown": round(float(pd.to_numeric(distribution["max_drawdown"], errors="coerce").min()), 1),
         "paths_with_margin_call": int((pd.to_numeric(distribution["margin_calls"], errors="coerce").fillna(0) > 0).sum()),
     }

@@ -78,6 +78,36 @@ def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
 
 
+def dmi_adx(df: pd.DataFrame, n: int = 14) -> pd.DataFrame:
+    """Wilder DMI/ADX。回傳 di_plus、di_minus、adx。
+
+    僅使用當根及以前資料；平滑採 Wilder alpha=1/n。
+    """
+    n = max(int(n), 1)
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    close = pd.to_numeric(df["close"], errors="coerce")
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr_w = tr.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    plus_sm = plus_dm.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    minus_sm = minus_dm.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    di_plus = 100.0 * plus_sm / atr_w.replace(0, np.nan)
+    di_minus = 100.0 * minus_sm / atr_w.replace(0, np.nan)
+    denom = (di_plus + di_minus).replace(0, np.nan)
+    dx = 100.0 * (di_plus - di_minus).abs() / denom
+    adx = dx.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    return pd.DataFrame({"di_plus": di_plus, "di_minus": di_minus, "adx": adx}, index=df.index)
+
+
 def volume_ma(volume: pd.Series, n: int = 20) -> pd.Series:
     return sma(volume, n)
 

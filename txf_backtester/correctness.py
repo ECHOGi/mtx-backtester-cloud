@@ -86,16 +86,22 @@ def _positive_float(value) -> float | None:
 
 def _stop_threshold_mode(p) -> str:
     mode = str(getattr(p, "stop_threshold_mode", "points") or "points").lower()
-    return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "points"
+    if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"}: return "entry_atr"
+    if mode in {"entry_pct", "pct", "percent", "percentage"}: return "entry_pct"
+    return "points"
 
 
-def _stop_distance_points(p, entry_atr) -> float | None:
-    if _stop_threshold_mode(p) == "entry_atr":
+def _stop_distance_points(p, entry_atr, entry_price=None) -> float | None:
+    mode = _stop_threshold_mode(p)
+    if mode == "entry_atr":
         atr_value = _positive_float(entry_atr)
         multiple = _positive_float(getattr(p, "stop_atr_multiple", None))
-        if atr_value is None or multiple is None:
-            return None
+        if atr_value is None or multiple is None: return None
         return atr_value * multiple
+    if mode == "entry_pct":
+        price = _positive_float(entry_price); pct = _positive_float(getattr(p, "stop_entry_pct", None))
+        if price is None or pct is None: return None
+        return price * pct / 100.0
     return _positive_float(getattr(p, "stop_points", None))
 
 
@@ -178,7 +184,7 @@ def _expected_exit(df: pd.DataFrame, entry_i: int, direction: str,
             exit_reason = "time_invalid_exit"
 
         if exit_price is None and p.use_fixed_stop:
-            stop_distance = _stop_distance_points(p, entry_atr)
+            stop_distance = _stop_distance_points(p, entry_atr, entry_price)
             stop = entry_price - d * float(stop_distance or 0.0)
             if d == 1 and row["low"] <= stop:
                 exit_price = min(row["open"], stop)

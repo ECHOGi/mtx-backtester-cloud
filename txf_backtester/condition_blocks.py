@@ -52,6 +52,11 @@ def _kd(df, period, k_smooth, d_smooth):
     return ind.kd(df, int(period), int(k_smooth), int(d_smooth))
 
 
+def _dmi(df, period=14):
+    n = int(period)
+    return _cached_indicator(df, ("dmi_adx", n), lambda: ind.dmi_adx(df, n))
+
+
 # ---------- 價格 vs 均線 ----------
 @register("close_above_ma")
 def close_above_ma(df, ma_type="SMA", period=20, **_):
@@ -63,6 +68,18 @@ def close_above_ma(df, ma_type="SMA", period=20, **_):
 def close_below_ma(df, ma_type="SMA", period=20, **_):
     """close < MA(N)"""
     return df["close"] < _ma(df, ma_type, period)
+
+
+@register("close_cross_up_ma")
+def close_cross_up_ma(df, ma_type="SMA", period=20, **_):
+    """收盤價由下往上穿越均線。"""
+    return ind.cross_over(df["close"], _ma(df, ma_type, period))
+
+
+@register("close_cross_down_ma")
+def close_cross_down_ma(df, ma_type="SMA", period=20, **_):
+    """收盤價由上往下穿越均線。"""
+    return ind.cross_under(df["close"], _ma(df, ma_type, period))
 
 
 # ---------- 價格 vs Bollinger ----------
@@ -221,6 +238,75 @@ def ma_slope_down(df, ma_type="SMA", period=20, **_):
     """均線向下（今日均線值低於昨日）"""
     m = _ma(df, ma_type, period)
     return m < m.shift(1)
+
+
+@register("close_return_pct_above")
+def close_return_pct_above(df, lookback=3, value=1.5, **_):
+    """收盤價 N 根有號報酬率高於門檻（百分比）。"""
+    n = max(int(lookback), 1)
+    ret = (df["close"] / df["close"].shift(n) - 1.0) * 100.0
+    return ret > float(value)
+
+
+@register("close_return_pct_below")
+def close_return_pct_below(df, lookback=3, value=-1.5, **_):
+    """收盤價 N 根有號報酬率低於門檻（百分比）。"""
+    n = max(int(lookback), 1)
+    ret = (df["close"] / df["close"].shift(n) - 1.0) * 100.0
+    return ret < float(value)
+
+
+@register("di_minus_above_di_plus")
+def di_minus_above_di_plus(df, period=14, **_):
+    """Wilder DI- > DI+。"""
+    d = _dmi(df, period)
+    return d["di_minus"] > d["di_plus"]
+
+
+@register("di_plus_above_di_minus")
+def di_plus_above_di_minus(df, period=14, **_):
+    """Wilder DI+ > DI-。"""
+    d = _dmi(df, period)
+    return d["di_plus"] > d["di_minus"]
+
+
+@register("adx_above")
+def adx_above(df, period=14, value=20, **_):
+    """Wilder ADX 高於門檻。"""
+    return _dmi(df, period)["adx"] >= float(value)
+
+
+@register("adx_below")
+def adx_below(df, period=14, value=20, **_):
+    """Wilder ADX 低於門檻。"""
+    return _dmi(df, period)["adx"] < float(value)
+
+
+@register("ma_rejection_bearish")
+def ma_rejection_bearish(df, ma_type="SMA", period=20, proximity_pct=0.5,
+                         require_bearish_close=False, allow_upper_wick=True,
+                         upper_wick_body_ratio=1.0, **_):
+    """價格由下方反彈接近均線但收盤未站上，並出現空方拒絕K棒。
+
+    proximity_pct：最高價至少到達 MA 下方指定百分比範圍。
+    空方K棒可由收黑或上影線/實體比例達標確認。
+    """
+    m = _ma(df, ma_type, period)
+    prox = max(float(proximity_pct), 0.0) / 100.0
+    approached = df["high"] >= m * (1.0 - prox)
+    stayed_below = df["close"] < m
+    was_below = df["close"].shift(1) < m.shift(1)
+    bearish = df["close"] < df["open"]
+    body = (df["close"] - df["open"]).abs().replace(0, np.nan)
+    upper_wick = df["high"] - pd.concat([df["open"], df["close"]], axis=1).max(axis=1)
+    wick_ok = upper_wick >= body.fillna(0.0) * max(float(upper_wick_body_ratio), 0.0)
+    if bool(require_bearish_close):
+        candle_ok = bearish
+    elif bool(allow_upper_wick):
+        candle_ok = bearish | wick_ok
+    else:
+        candle_ok = bearish
+    return approached & stayed_below & was_below & candle_ok
 
 
 # ---------- KD ----------

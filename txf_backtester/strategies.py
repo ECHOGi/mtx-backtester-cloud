@@ -86,9 +86,10 @@ class StrategyParams:
     use_macd_reverse: bool = True
     use_fixed_stop: bool = True
     # v0.6.6：停損距離可使用固定點數或「進場前已完成 K 棒 ATR × 倍數」。
-    stop_threshold_mode: str = "points"  # points / entry_atr
+    stop_threshold_mode: str = "points"  # points / entry_atr / entry_pct
     stop_points: float = 100.0
     stop_atr_multiple: float = 0.75
+    stop_entry_pct: float = 1.5
     # ATR 停損換算的正常價格風險若超過上限，直接略過該次進場。
     # 僅限制預定停損距離，不保證跳空時的實際損失不超過上限。
     use_entry_risk_cap: bool = False
@@ -171,6 +172,14 @@ class StrategyParams:
     chandelier_exit_confirmation_bars: int = 1
     macd_exit_confirmation_bars: int = 1
     signal_exit_confirmation_bars: int = 1
+    # v0.8.7.0：最大持有根數，收盤確認後下一根開盤強制出場。
+    use_max_holding_exit: bool = False
+    max_holding_bars: int = 60
+    # v0.8.7.0：R倍數部分出場。R可由進場價至訊號均線距離，並以ATR設下限。
+    use_partial_r_exit: bool = False
+    partial_r_multiple: float = 3.0
+    partial_exit_fraction: float = 0.5
+    initial_r_atr_floor_multiple: float = 0.5
     # 研究基準目標：只做比較輸出，不影響交易。
     benchmark_name: str = ""
     benchmark_annual_return_target: float = 0.0
@@ -232,7 +241,7 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_profit_scaled_macd_exclusion", "macd_reverse_exclude_profit_amount",
                "macd_reverse_exclude_atr_multiple",
                "use_macd_reverse",
-               "use_fixed_stop", "stop_threshold_mode", "stop_points", "stop_atr_multiple",
+               "use_fixed_stop", "stop_threshold_mode", "stop_points", "stop_atr_multiple", "stop_entry_pct",
                "use_entry_risk_cap", "max_entry_risk_amount",
                "use_dynamic_position_sizing", "use_account_margin_model",
                "position_sizing_capital",
@@ -263,7 +272,9 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "entry_group_exit_overrides",
                "minimum_holding_bars",
                "chandelier_exit_confirmation_bars", "macd_exit_confirmation_bars",
-               "signal_exit_confirmation_bars",
+               "signal_exit_confirmation_bars", "use_max_holding_exit", "max_holding_bars",
+               "use_partial_r_exit", "partial_r_multiple", "partial_exit_fraction",
+               "initial_r_atr_floor_multiple",
                "benchmark_name", "benchmark_annual_return_target",
                "use_take_profit", "take_profit_points",
                "use_trailing_stop", "trailing_points"]
@@ -624,6 +635,30 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
         out["exit_long_signal"], _ = evaluate_combo(out, elb)
     if esb:
         out["exit_short_signal"], _ = evaluate_combo(out, esb)
+
+    # v0.8.7.0：依進場 OR 組合保存不同條件出場。
+    group_exit_blocks = cfg.get("entry_group_exit_blocks") or {}
+    if isinstance(group_exit_blocks, dict):
+        for raw_idx, spec in group_exit_blocks.items():
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(spec, dict):
+                continue
+            direction_name = str(spec.get("direction", "short")).lower()
+            block = spec.get("block") or spec
+            signal, _ = evaluate_combo(out, block)
+            out[f"exit_{direction_name}_group_{idx}_signal"] = signal.fillna(False)
+
+    # v0.8.7.0：R倍數部分出場所需的訊號根均線參考值。
+    r_def = cfg.get("r_definition") or {}
+    if isinstance(r_def, dict) and r_def:
+        ma_type = str(r_def.get("ma_type", "SMA"))
+        period = int(r_def.get("period", 60))
+        ref = ind.ma(out["close"], period, ma_type)
+        out["long_r_reference_ma"] = ref
+        out["short_r_reference_ma"] = ref
     return out
 
 

@@ -234,17 +234,28 @@ def _drawdown_risk_brake_multiplier(p, realized: float = 0.0,
 
 def _stop_threshold_mode(p) -> str:
     mode = str(getattr(p, "stop_threshold_mode", "points") or "points").lower()
-    return "entry_atr" if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"} else "points"
+    if mode in {"entry_atr", "atr", "atr_multiple", "normalized_atr"}:
+        return "entry_atr"
+    if mode in {"entry_pct", "pct", "percent", "percentage"}:
+        return "entry_pct"
+    return "points"
 
 
-def _stop_distance_points(p, entry_atr) -> float | None:
-    """回傳本筆預定停損距離；ATR 模式固定使用訊號根 ATR。"""
-    if _stop_threshold_mode(p) == "entry_atr":
+def _stop_distance_points(p, entry_atr, entry_price=None) -> float | None:
+    """回傳本筆預定停損距離；ATR使用訊號根，百分比使用實際進場價。"""
+    mode = _stop_threshold_mode(p)
+    if mode == "entry_atr":
         atr_value = _positive_float(entry_atr)
         multiple = _positive_float(getattr(p, "stop_atr_multiple", None))
         if atr_value is None or multiple is None:
             return None
         return atr_value * multiple
+    if mode == "entry_pct":
+        price = _positive_float(entry_price)
+        pct = _positive_float(getattr(p, "stop_entry_pct", None))
+        if price is None or pct is None:
+            return None
+        return price * pct / 100.0
     return _positive_float(getattr(p, "stop_points", None))
 
 
@@ -668,7 +679,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 p, pending["direction"], pending.get("entry_group_index"))
             entry_price = row["open"] + d * cost.slippage_points  # 不利方向滑價
             entry_atr = pending.get("signal_atr")
-            planned_stop_points = (_stop_distance_points(entry_p, entry_atr)
+            planned_stop_points = (_stop_distance_points(entry_p, entry_atr, entry_price)
                                    if getattr(entry_p, "use_fixed_stop", False) else None)
             # v0.8.6.7：實際停損與部位估算距離可分離。
             # 只有明確設定 reference ATR 倍數時才覆寫部位估算距離；
@@ -727,7 +738,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
 
             cap = _positive_float(getattr(entry_p, "max_entry_risk_amount", None))
             if (not skip_entry and getattr(entry_p, "use_entry_risk_cap", False)
-                    and _stop_threshold_mode(entry_p) == "entry_atr"
+                    and _stop_threshold_mode(entry_p) in {"entry_atr", "entry_pct", "points"}
                     and cap is not None and planned_stop_risk_amount is not None
                     and planned_stop_risk_amount > cap):
                 risk_cap_skipped_entries += 1
@@ -757,13 +768,21 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "requested_micro_units": pending.get("target_micro_units"),
                     # 進場發生在本根開盤，不能使用本根尚未完成的 ATR；固定保存訊號根 ATR。
                     "entry_atr": entry_atr,
+                    "r_reference_ma": pending.get("r_reference_ma"),
+                    "initial_r_points": max(
+                        abs(float(entry_price) - float(pending.get("r_reference_ma")))
+                        if _positive_float(pending.get("r_reference_ma")) is not None else 0.0,
+                        (float(entry_atr) * max(float(getattr(entry_p, "initial_r_atr_floor_multiple", 0.5) or 0.0), 0.0))
+                        if _positive_float(entry_atr) is not None else 0.0,
+                    ) or None,
+                    "partial_r_done": False,
                     "planned_stop_points": planned_stop_points,
                     "planned_stop_risk_amount": planned_stop_risk_amount,
                     "position_sizing_reference_points": position_sizing_reference_points,
                     "position_sizing_reference_risk_amount": position_sizing_reference_risk_amount,
                     "entry_risk_cap_amount": cap
                     if (getattr(entry_p, "use_entry_risk_cap", False)
-                        and _stop_threshold_mode(entry_p) == "entry_atr") else None,
+                        and _stop_threshold_mode(entry_p) in {"entry_atr", "entry_pct", "points"}) else None,
                     "position_action": position_action,
                     "previous_entry_micro_units": int(last_entry_units),
                     **(position_spec or {}),
@@ -812,11 +831,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 exit_price = row["open"]
                 exit_reason = "time_invalid_exit"
 
+            pending_max_exit_i = pos.get("pending_max_holding_exit_i")
+            if (exit_price is None and pending_max_exit_i is not None
+                    and i > int(pending_max_exit_i)):
+                exit_price = row["open"]
+                exit_reason = "max_holding_exit"
+
             # a) 停損（固定點數或進場 ATR 倍數；盤中觸價）
             if exit_price is None and active_p.use_fixed_stop:
                 stop_distance = _positive_float(pos.get("planned_stop_points"))
                 if stop_distance is None:
-                    stop_distance = _stop_distance_points(active_p, pos.get("entry_atr"))
+                    stop_distance = _stop_distance_points(active_p, pos.get("entry_atr"), ep)
                 stop = ep - d * float(stop_distance or 0.0)
                 if d == 1 and row["low"] <= stop:
                     exit_price = min(row["open"], stop)
@@ -824,6 +849,58 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 elif d == -1 and row["high"] >= stop:
                     exit_price = max(row["open"], stop)
                     exit_reason = "fixed_stop"
+
+            # a2) v0.8.7.0 R倍數部分出場（盤中觸價，只執行一次）。
+            if (exit_price is None and bool(getattr(active_p, "use_partial_r_exit", False))
+                    and not bool(pos.get("partial_r_done", False))):
+                r_points = _positive_float(pos.get("initial_r_points"))
+                r_mult = _positive_float(getattr(active_p, "partial_r_multiple", 3.0))
+                units_now = int(pos.get("micro_units", 0) or 0)
+                fraction = min(max(float(getattr(active_p, "partial_exit_fraction", 0.5) or 0.5), 0.0), 1.0)
+                if r_points is not None and r_mult is not None and units_now >= 2 and fraction > 0:
+                    target = ep + d * r_points * r_mult
+                    hit = (d == 1 and row["high"] >= target) or (d == -1 and row["low"] <= target)
+                    if hit:
+                        partial_px = max(row["open"], target) if d == 1 else min(row["open"], target)
+                        exit_units = min(max(int(round(units_now * fraction)), 1), units_now - 1)
+                        partial_spec = _contract_mix_from_micro_units(exit_units, active_p, cost)
+                        partial_exec_px = partial_px - d * cost.slippage_points
+                        partial_pts = (partial_exec_px - ep) * d
+                        partial_pv = float(partial_spec.get("point_value_total", 0.0))
+                        partial_fee = float(partial_spec.get("fee_per_side_total", 0.0))
+                        partial_tax = (ep + partial_exec_px) * partial_pv * cost.tax_rate
+                        partial_amount = partial_pts * partial_pv - 2 * partial_fee - partial_tax
+                        trades.append({
+                            "signal_date": pos["signal_date"], "signal_bar_index": pos["signal_i"],
+                            "entry_date": pos["entry_date"], "entry_execution_date": pos["entry_execution_date"],
+                            "entry_bar_index": pos["entry_i"], "exit_date": dt, "exit_bar_index": i,
+                            "direction": "long" if d == 1 else "short",
+                            "entry_price": round(ep, 2), "exit_price": round(partial_exec_px, 2),
+                            "quantity": round(float(partial_spec.get("small_equivalent_quantity", 0.0)), 2),
+                            "large_quantity": int(partial_spec.get("large_qty", 0)),
+                            "small_quantity": int(partial_spec.get("small_qty", 0)),
+                            "micro_quantity": int(partial_spec.get("micro_qty", 0)),
+                            "position_micro_units": exit_units,
+                            "point_value_total": round(partial_pv, 1),
+                            "position_margin_amount": round(float(partial_spec.get("margin_amount", 0.0)), 1),
+                            "maintenance_margin_amount": round(float(partial_spec.get("maintenance_margin_amount", 0.0)), 1),
+                            "position_sizing_mode": str(pos.get("position_sizing_mode", "fixed")),
+                            "pnl_points": round(partial_pts, 2), "pnl_amount": round(partial_amount, 1),
+                            "holding_bars": i - pos["entry_i"] + 1, "exit_reason": "partial_r_exit",
+                            "entry_reason": pos.get("entry_reason"), "entry_group_index": pos.get("entry_group_index"),
+                            "entry_atr": pos.get("entry_atr"), "initial_r_points": r_points,
+                            "partial_exit_fraction": exit_units / units_now,
+                        })
+                        realized += partial_amount
+                        realized_peak_equity = max(realized_peak_equity, initial_sizing_capital + realized)
+                        remain_spec = _contract_mix_from_micro_units(units_now - exit_units, active_p, cost)
+                        for key in ("micro_units", "large_qty", "small_qty", "micro_qty",
+                                    "small_equivalent_quantity", "point_value_total", "fee_per_side_total",
+                                    "margin_amount", "maintenance_margin_amount"):
+                            pos[key] = remain_spec.get(key)
+                        pos["partial_r_done"] = True
+                        pos["partial_r_exit_units"] = exit_units
+                        pos["partial_r_exit_price"] = partial_exec_px
 
             # b) 固定停利（盤中觸價）
             if exit_price is None and active_p.use_take_profit:
@@ -935,14 +1012,23 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             #     exit_long_signal / exit_short_signal 欄位時才會啟用，
             #     否則完全不影響既有出場行為（self_check 8 cases 不變）。
             raw_signal_exit = False
+            signal_reason = "signal_exit"
             if getattr(active_p, "use_signal_exit", False):
-                sig_col = "exit_long_signal" if d == 1 else "exit_short_signal"
-                raw_signal_exit = bool(sig_col in df.columns and row.get(sig_col, False))
+                group_idx = pos.get("entry_group_index")
+                group_col = None
+                if group_idx is not None:
+                    group_col = f"exit_{'long' if d == 1 else 'short'}_group_{int(group_idx)}_signal"
+                if group_col and group_col in df.columns:
+                    raw_signal_exit = bool(row.get(group_col, False))
+                    signal_reason = f"signal_exit_group_{int(group_idx)}"
+                else:
+                    sig_col = "exit_long_signal" if d == 1 else "exit_short_signal"
+                    raw_signal_exit = bool(sig_col in df.columns and row.get(sig_col, False))
             signal_ok = _confirmed_exit(
                 pos, "signal", raw_signal_exit and discretionary_exit_allowed,
                 getattr(active_p, "signal_exit_confirmation_bars", 1))
             if exit_price is None and signal_ok:
-                exit_price, exit_reason = row["close"], "signal_exit"
+                exit_price, exit_reason = row["close"], signal_reason
 
             # e3) v0.8.6.7 五根K無效交易退出。
             # 只在指定持有根數的收盤檢查一次；若成立，下一根開盤退出。
@@ -963,6 +1049,13 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                             and ((not require_losing) or losing_close) and i < n - 1):
                         pos["pending_time_invalid_exit_i"] = i
                         pos["time_invalid_mfe_atr_multiple"] = mfe_multiple
+
+
+            # v0.8.7.0 最大持有根數：第N根收盤確認，下一根開盤退出。
+            if exit_price is None and bool(getattr(active_p, "use_max_holding_exit", False)):
+                max_bars = max(int(getattr(active_p, "max_holding_bars", 60) or 60), 1)
+                if holding_now >= max_bars and pos.get("pending_max_holding_exit_i") is None and i < n - 1:
+                    pos["pending_max_holding_exit_i"] = i
 
             # f) 資料結束強制平倉
             if exit_price is None and i == n - 1:
@@ -1029,6 +1122,9 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "max_favorable_points": round(max_favorable_points, 2),
                 "max_favorable_amount": round(max_favorable_amount, 1),
                 "entry_atr": round(entry_atr, 4) if entry_atr else None,
+                "initial_r_points": round(float(pos.get("initial_r_points")), 4)
+                    if _positive_float(pos.get("initial_r_points")) else None,
+                "partial_exit_fraction": None,
                 "planned_stop_points": round(float(pos.get("planned_stop_points")), 4)
                     if _positive_float(pos.get("planned_stop_points")) else None,
                 "planned_stop_risk_amount": round(float(pos.get("planned_stop_risk_amount")), 1)
@@ -1100,6 +1196,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                         "entry_reason": _entry_reason_for_group(row, "long", chosen_group),
                         "entry_group_index": chosen_group,
                         "signal_atr": _positive_float(row.get("long_entry_atr", row.get("atr"))),
+                        "r_reference_ma": _positive_float(row.get("long_r_reference_ma")),
                         "target_micro_units": int(row.get("long_position_micro_units", 0) or 0)
                             if getattr(pending_p, "use_regime_position_sizing", False) else None,
                         "position_regime": str(row.get("long_position_regime", "fixed")),
@@ -1116,6 +1213,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                     "entry_reason": _entry_reason_for_group(row, "short", chosen_group),
                     "entry_group_index": chosen_group,
                     "signal_atr": _positive_float(row.get("short_entry_atr", row.get("atr"))),
+                    "r_reference_ma": _positive_float(row.get("short_r_reference_ma")),
                     "target_micro_units": int(row.get("short_position_micro_units", 0) or 0)
                         if getattr(pending_p, "use_regime_position_sizing", False) else None,
                     "position_regime": str(row.get("short_position_regime", "fixed")),
@@ -1182,7 +1280,7 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "exit_reason", "entry_reason", "entry_group_index",
         "max_adverse_points", "max_adverse_amount",
         "max_favorable_points", "max_favorable_amount",
-        "entry_atr", "planned_stop_points", "planned_stop_risk_amount",
+        "entry_atr", "initial_r_points", "partial_exit_fraction", "planned_stop_points", "planned_stop_risk_amount",
         "position_sizing_reference_points", "position_sizing_reference_risk_amount",
         "time_invalid_mfe_atr_multiple",
         "entry_risk_cap_amount", "risk_budget_amount", "base_risk_fraction",
