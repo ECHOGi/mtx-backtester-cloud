@@ -605,6 +605,11 @@ def _chandelier_suffix(mult: float) -> str:
     return str(float(mult)).replace(".", "_").replace("-", "m")
 
 
+def _chandelier_column(direction: str, period: int, mult: float) -> str:
+    side = "long" if str(direction).lower() == "long" else "short"
+    return f"chandelier_{side}_p{int(period)}_m_{_chandelier_suffix(mult)}"
+
+
 def _select_profit_tier_mult(reference_value: float, thresholds_raw, mults, fallback: float) -> float:
     """依目前分段比較值選擇吊燈倍數；門檻需升冪，倍數數量須多一段。"""
     try:
@@ -971,13 +976,24 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                         getattr(active_p, "profit_tier_mults", ()),
                         getattr(active_p, "chandelier_mult", 3.0),
                     )
-                    suf = _chandelier_suffix(mult)
-                    long_col = f"chandelier_long_m_{suf}"
-                    short_col = f"chandelier_short_m_{suf}"
+                    period = int(getattr(
+                        active_p, "profit_tier_chandelier_period",
+                        getattr(active_p, "chandelier_period", 22),
+                    ) or 22)
+                    long_col = _chandelier_column("long", period, mult)
+                    short_col = _chandelier_column("short", period, mult)
                     ch_label = f"profit_tier_chandelier_{mult:g}"
                 else:
-                    long_col = "chandelier_long"
-                    short_col = "chandelier_short"
+                    period = int(getattr(active_p, "chandelier_period", 22) or 22)
+                    mult = float(getattr(active_p, "chandelier_mult", 3.0) or 3.0)
+                    long_col = _chandelier_column("long", period, mult)
+                    short_col = _chandelier_column("short", period, mult)
+
+                # 向下相容舊資料框；新版本正常情況一律命中新週期化欄位。
+                if long_col not in df.columns:
+                    long_col = "chandelier_long" if not getattr(active_p, "use_profit_tier_chandelier", False) else f"chandelier_long_m_{_chandelier_suffix(mult)}"
+                if short_col not in df.columns:
+                    short_col = "chandelier_short" if not getattr(active_p, "use_profit_tier_chandelier", False) else f"chandelier_short_m_{_chandelier_suffix(mult)}"
 
                 if d == 1:
                     ch = row.get(long_col)

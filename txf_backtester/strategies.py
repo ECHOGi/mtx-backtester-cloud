@@ -405,26 +405,61 @@ def _chandelier_suffix(mult: float) -> str:
     return str(float(mult)).replace(".", "_").replace("-", "m")
 
 
+def _chandelier_column(direction: str, period: int, mult: float) -> str:
+    """回傳可同時區分方向、週期與倍數的吊燈欄位名稱。"""
+    side = "long" if str(direction).lower() == "long" else "short"
+    return f"chandelier_{side}_p{int(period)}_m_{_chandelier_suffix(mult)}"
 
 
-def _profit_tier_indicator_specs(p: StrategyParams) -> tuple:
-    """收集共用與入口覆寫所需的（period, mult）吊燈指標。"""
-    specs = set()
+def _iter_effective_exit_configs(p: StrategyParams):
+    """列舉共用、方向別及入口群組別的有效出場設定。
+
+    v0.8.7.7：多空混合策略可能把空單階梯吊燈放在
+    short_exit.entry_group_exit_overrides 內。舊版只查看最外層設定，
+    因此漏算空單10日吊燈。這裡以實際覆寫順序建立所有有效設定。
+    """
     base = dict(vars(p)) if hasattr(p, "__dict__") else {}
-    candidates = [base]
-    raw = getattr(p, "entry_group_exit_overrides", {}) or {}
-    if isinstance(raw, dict):
-        for ov in raw.values():
-            if isinstance(ov, dict):
-                merged = dict(base)
-                merged.update(ov)
-                candidates.append(merged)
-    for cfg_ in candidates:
-        if not bool(cfg_.get("use_profit_tier_chandelier", False)):
-            continue
-        period = int(cfg_.get("profit_tier_chandelier_period", cfg_.get("chandelier_period", 22)) or 22)
-        for mult in (cfg_.get("profit_tier_mults", ()) or ()):
-            specs.add((period, float(mult)))
+
+    def emit_with_groups(cfg):
+        yield cfg
+        raw_groups = cfg.get("entry_group_exit_overrides", {}) or {}
+        if isinstance(raw_groups, dict):
+            for override in raw_groups.values():
+                if not isinstance(override, dict):
+                    continue
+                merged = dict(cfg)
+                merged.update({k: v for k, v in override.items()
+                               if k != "entry_group_exit_overrides"})
+                yield merged
+
+    # 共用設定與共用入口群組覆寫。
+    yield from emit_with_groups(base)
+
+    # 方向別覆寫，再套用該方向自己的入口群組覆寫。
+    for key in ("long_exit_overrides", "short_exit_overrides"):
+        directional = dict(base)
+        overrides = base.get(key, {}) or {}
+        if isinstance(overrides, dict):
+            directional.update(overrides)
+        yield from emit_with_groups(directional)
+
+
+def _chandelier_indicator_specs(p: StrategyParams) -> tuple:
+    """收集所有有效出場設定所需的（period, mult）吊燈指標。"""
+    specs = set()
+    for cfg_ in _iter_effective_exit_configs(p):
+        if bool(cfg_.get("use_chandelier", False)):
+            period = int(cfg_.get("chandelier_period", 22) or 22)
+            mult = float(cfg_.get("chandelier_mult", 3.0) or 3.0)
+            specs.add((period, mult))
+        if bool(cfg_.get("use_profit_tier_chandelier", False)):
+            period = int(cfg_.get(
+                "profit_tier_chandelier_period",
+                cfg_.get("chandelier_period", 22),
+            ) or 22)
+            mults = cfg_.get("profit_tier_mults", ()) or ()
+            for mult in mults:
+                specs.add((period, float(mult)))
     return tuple(sorted(specs))
 
 
@@ -438,7 +473,7 @@ def _indicator_signature(p: StrategyParams) -> tuple:
         float(getattr(p, "sar_af_start", 0.02)),
         float(getattr(p, "sar_af_step", 0.02)),
         float(getattr(p, "sar_af_max", 0.2)),
-        _profit_tier_indicator_specs(p),
+        _chandelier_indicator_specs(p),
         int(p.kd_period), int(p.rsi_period), int(p.atr_period), int(p.vol_ma_period),
         tuple(int(x) for x in p.ma_periods),
         bool(p.ma_filter_enabled), str(p.ma_filter_type), int(p.ma_filter_period),
@@ -467,13 +502,23 @@ def add_indicator_columns(df: pd.DataFrame, p: StrategyParams, cfg: dict | None 
         parts.append(ind.parabolic_sar(out, p.sar_af_start, p.sar_af_step, p.sar_af_max))
     out = pd.concat(parts, axis=1)
 
-    # v0.8.7.5：共用設定或入口專屬覆寫啟用分段吊燈時，均預先計算。
-    # 同一策略目前每個倍數只使用一個週期；若未來同倍數跨週期，需再擴充欄位命名。
-    for tier_period, mult in _profit_tier_indicator_specs(p):
+    # v0.8.7.7：預先計算共用、方向別及入口群組別所需的全部吊燈。
+    # 欄位名稱同時包含週期與倍數，避免多單22日與空單10日相互覆蓋。
+    legacy_periods_by_mult = {}
+    for tier_period, mult in _chandelier_indicator_specs(p):
         ch_t = ind.chandelier_exit(out, tier_period, mult)
+        out[_chandelier_column("long", tier_period, mult)] = ch_t["chandelier_long"]
+        out[_chandelier_column("short", tier_period, mult)] = ch_t["chandelier_short"]
+        legacy_periods_by_mult.setdefault(float(mult), set()).add(int(tier_period))
+
+    # 舊欄位只在同一倍數沒有跨週期歧義時保留，供舊外部程式相容。
+    for mult, periods in legacy_periods_by_mult.items():
+        if len(periods) != 1:
+            continue
+        period = next(iter(periods))
         suf = _chandelier_suffix(mult)
-        out[f"chandelier_long_m_{suf}"] = ch_t["chandelier_long"]
-        out[f"chandelier_short_m_{suf}"] = ch_t["chandelier_short"]
+        out[f"chandelier_long_m_{suf}"] = out[_chandelier_column("long", period, mult)]
+        out[f"chandelier_short_m_{suf}"] = out[_chandelier_column("short", period, mult)]
     kd_df = ind.kd(out, p.kd_period)
     out["k"], out["d"] = kd_df["k"], kd_df["d"]
     out["rsi"] = ind.rsi(close, p.rsi_period)

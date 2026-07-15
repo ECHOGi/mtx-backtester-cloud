@@ -1,5 +1,5 @@
 {
-  "version": "v0.8.7.6",
-  "release_name": "多空持倉優先權測試版",
-  "build_id": "20260715-7"
+  "version": "v0.8.7.7",
+  "release_name": "多空吊燈週期隔離修正版",
+  "build_id": "20260716-1"
 }
