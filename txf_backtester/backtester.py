@@ -961,13 +961,13 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
 
             # d) 吊燈出場（收盤確認）
             # v0.5.0：支援「獲利分段吊燈」：依目前浮盈金額選擇不同吊燈倍數。
-            if exit_price is None and (p.use_chandelier or getattr(active_p, "use_profit_tier_chandelier", False)):
+            if exit_price is None and (getattr(active_p, "use_chandelier", False) or getattr(active_p, "use_profit_tier_chandelier", False)):
                 ch_label = "chandelier"
                 if getattr(active_p, "use_profit_tier_chandelier", False):
                     tier_value = _tier_reference_value(pos, ep, d, row, cost, active_p)
                     mult = _select_profit_tier_mult(
                         tier_value,
-                        _tier_thresholds(p),
+                        _tier_thresholds(active_p),
                         getattr(active_p, "profit_tier_mults", ()),
                         getattr(active_p, "chandelier_mult", 3.0),
                     )

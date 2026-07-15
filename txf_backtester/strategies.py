@@ -402,6 +402,29 @@ def _chandelier_suffix(mult: float) -> str:
     return str(float(mult)).replace(".", "_").replace("-", "m")
 
 
+
+
+def _profit_tier_indicator_specs(p: StrategyParams) -> tuple:
+    """收集共用與入口覆寫所需的（period, mult）吊燈指標。"""
+    specs = set()
+    base = dict(vars(p)) if hasattr(p, "__dict__") else {}
+    candidates = [base]
+    raw = getattr(p, "entry_group_exit_overrides", {}) or {}
+    if isinstance(raw, dict):
+        for ov in raw.values():
+            if isinstance(ov, dict):
+                merged = dict(base)
+                merged.update(ov)
+                candidates.append(merged)
+    for cfg_ in candidates:
+        if not bool(cfg_.get("use_profit_tier_chandelier", False)):
+            continue
+        period = int(cfg_.get("profit_tier_chandelier_period", cfg_.get("chandelier_period", 22)) or 22)
+        for mult in (cfg_.get("profit_tier_mults", ()) or ()):
+            specs.add((period, float(mult)))
+    return tuple(sorted(specs))
+
+
 def _indicator_signature(p: StrategyParams) -> tuple:
     """只納入會改變基礎指標欄位的參數，供同一路徑多策略共用。"""
     return (
@@ -412,9 +435,7 @@ def _indicator_signature(p: StrategyParams) -> tuple:
         float(getattr(p, "sar_af_start", 0.02)),
         float(getattr(p, "sar_af_step", 0.02)),
         float(getattr(p, "sar_af_max", 0.2)),
-        bool(getattr(p, "use_profit_tier_chandelier", False)),
-        int(getattr(p, "profit_tier_chandelier_period", p.chandelier_period) or p.chandelier_period),
-        tuple(sorted(float(x) for x in (getattr(p, "profit_tier_mults", ()) or ()))),
+        _profit_tier_indicator_specs(p),
         int(p.kd_period), int(p.rsi_period), int(p.atr_period), int(p.vol_ma_period),
         tuple(int(x) for x in p.ma_periods),
         bool(p.ma_filter_enabled), str(p.ma_filter_type), int(p.ma_filter_period),
@@ -443,15 +464,13 @@ def add_indicator_columns(df: pd.DataFrame, p: StrategyParams, cfg: dict | None 
         parts.append(ind.parabolic_sar(out, p.sar_af_start, p.sar_af_step, p.sar_af_max))
     out = pd.concat(parts, axis=1)
 
-    # v0.5.0：若啟用獲利分段吊燈，預先計算各倍數的吊燈線，供 backtester 依浮盈選用。
-    if getattr(p, "use_profit_tier_chandelier", False):
-        tier_period = int(getattr(p, "profit_tier_chandelier_period", p.chandelier_period) or p.chandelier_period)
-        tier_mults = list(getattr(p, "profit_tier_mults", ()) or ())
-        for mult in sorted({float(x) for x in tier_mults}):
-            ch_t = ind.chandelier_exit(out, tier_period, mult)
-            suf = _chandelier_suffix(mult)
-            out[f"chandelier_long_m_{suf}"] = ch_t["chandelier_long"]
-            out[f"chandelier_short_m_{suf}"] = ch_t["chandelier_short"]
+    # v0.8.7.5：共用設定或入口專屬覆寫啟用分段吊燈時，均預先計算。
+    # 同一策略目前每個倍數只使用一個週期；若未來同倍數跨週期，需再擴充欄位命名。
+    for tier_period, mult in _profit_tier_indicator_specs(p):
+        ch_t = ind.chandelier_exit(out, tier_period, mult)
+        suf = _chandelier_suffix(mult)
+        out[f"chandelier_long_m_{suf}"] = ch_t["chandelier_long"]
+        out[f"chandelier_short_m_{suf}"] = ch_t["chandelier_short"]
     kd_df = ind.kd(out, p.kd_period)
     out["k"], out["d"] = kd_df["k"], kd_df["d"]
     out["rsi"] = ind.rsi(close, p.rsi_period)
@@ -533,6 +552,65 @@ def evaluate_entry_detailed(out: pd.DataFrame, spec):
     return sig, reasons, [sig], [reasons]
 
 
+
+
+def _rebuild_entry_from_groups(groups, group_reasons, index):
+    total = pd.Series(False, index=index)
+    reasons = pd.Series("", index=index, dtype="object")
+    for sig_i, reason_i in zip(groups, group_reasons):
+        sig_i = sig_i.fillna(False)
+        newly = sig_i & ~total
+        reasons = reasons.where(~newly, reason_i.where(sig_i, ""))
+        total = total | sig_i
+    return total.fillna(False), reasons
+
+
+def _apply_entry_group_priority_policy(out, total, reasons, groups, group_reasons, cfg, direction):
+    """v0.8.7.5：高優先入口訊號出現後，短期封鎖低優先入口。
+
+    只改變空手時可接受的進場訊號，不改變已持倉交易，也不使用未來資料。
+    policy 範例：
+    {"direction":"short", "higher_priority_groups":[1,2],
+     "lower_priority_groups":[3,4], "block_lower_after_higher_signal_bars":10}
+    """
+    policy = cfg.get("entry_group_priority_policy") or {}
+    if not isinstance(policy, dict):
+        return total, reasons, groups, group_reasons
+    if str(policy.get("direction", direction)).lower() != str(direction).lower():
+        return total, reasons, groups, group_reasons
+    high = []
+    low = []
+    for raw in policy.get("higher_priority_groups", []) or []:
+        try:
+            idx = int(raw) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(groups):
+            high.append(idx)
+    for raw in policy.get("lower_priority_groups", []) or []:
+        try:
+            idx = int(raw) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(groups):
+            low.append(idx)
+    if not high or not low:
+        return total, reasons, groups, group_reasons
+    bars = max(1, int(policy.get("block_lower_after_higher_signal_bars", 1) or 1))
+    high_signal = pd.Series(False, index=out.index)
+    for idx in high:
+        high_signal = high_signal | groups[idx].fillna(False)
+    blocked = high_signal.rolling(bars, min_periods=1).max().astype(bool)
+    new_groups = list(groups)
+    new_reasons = list(group_reasons)
+    for idx in low:
+        new_groups[idx] = new_groups[idx].fillna(False) & ~blocked
+        new_reasons[idx] = new_reasons[idx].where(new_groups[idx], "")
+    new_total, new_total_reasons = _rebuild_entry_from_groups(
+        new_groups, new_reasons, out.index)
+    return new_total, new_total_reasons, new_groups, new_reasons
+
+
 def evaluate_entry(out: pd.DataFrame, spec):
     """向下相容舊介面，只回傳總訊號與原因。"""
     total, reasons, _, _ = evaluate_entry_detailed(out, spec)
@@ -597,6 +675,11 @@ def run_strategy_config(df: pd.DataFrame, cfg: dict,
         out, cfg.get("entry_long"))
     short_sig, short_reasons, short_groups, short_group_reasons = evaluate_entry_detailed(
         out, cfg.get("entry_short"))
+
+    long_sig, long_reasons, long_groups, long_group_reasons = _apply_entry_group_priority_policy(
+        out, long_sig, long_reasons, long_groups, long_group_reasons, cfg, "long")
+    short_sig, short_reasons, short_groups, short_group_reasons = _apply_entry_group_priority_policy(
+        out, short_sig, short_reasons, short_groups, short_group_reasons, cfg, "short")
 
     # v0.7.0：盤勢過濾與原始進場條件分離。可在不改策略積木的情況下
     # 比較「相同訊號、不同市場狀態」；未提供 filter 時與舊版完全一致。
