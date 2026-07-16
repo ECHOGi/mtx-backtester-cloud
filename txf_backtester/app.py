@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.8.0｜50萬元起點敏感度版。
+"""MTX 台指期回測平台 v0.8.8.1｜50萬元起點敏感度日K修正版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -36,9 +36,9 @@ from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
 from rolling_start import run_rolling_start_sensitivity
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.8.0",
-    "release_name": "50萬元起點敏感度版",
-    "build_id": "20260716-2",
+    "version": "v0.8.8.1",
+    "release_name": "50萬元起點敏感度日K修正版",
+    "build_id": "20260716-4",
 }
 try:
     _version_info = json.loads((Path(__file__).resolve().parent / "version.json").read_text(encoding="utf-8"))

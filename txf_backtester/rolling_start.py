@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.8.8.0：50萬元滾動起點敏感度回測。"""
+"""v0.8.8.1：50萬元滾動起點敏感度回測（日夜盤先合成唯一交易日日K）。"""
 from __future__ import annotations
 
 import copy
@@ -13,6 +13,7 @@ from backtester import CostModel, run_backtest
 from benchmark_00631l import historical_buy_hold_curve
 from metrics import compute_metrics, yearly_stats
 from multi_timeframe import prepare_execution_frame
+from synthetic_timeframes import aggregate_full_session_daily
 
 
 @dataclass(frozen=True)
@@ -509,9 +510,19 @@ def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[
 
     if not items:
         raise ValueError("起點敏感度沒有策略")
-    # 只用第一個策略建立完整日K與起點分類。策略訊號不參與分類。
+    # v0.8.8.1：輸入檔可能同一trade_date同時含盤後與一般盤。
+    # 起點、暖機、252/504/756期限與策略指標都必須建立在「唯一交易日」日K上；
+    # 不可直接把session列數當成日K列數。
+    full_daily = aggregate_full_session_daily(session_bars).sort_values("trade_date").reset_index(drop=True)
+    if full_daily.empty:
+        raise ValueError("起點敏感度無法建立完整交易日日K")
+    daily_dates = pd.to_datetime(full_daily["trade_date"], errors="coerce").dt.normalize()
+    if daily_dates.isna().any() or daily_dates.duplicated().any():
+        raise ValueError("起點敏感度完整日K仍含無效或重複trade_date")
+
+    # 只用第一個策略建立起點分類；策略訊號不參與分類。
     first_cfg = copy.deepcopy(items[0][1])
-    full_frame, _, full_mt = prepare_execution_frame({"1D": session_bars}, first_cfg)
+    full_frame, _, full_mt = prepare_execution_frame({"1D": full_daily}, first_cfg)
     if str(full_mt.get("execution_timeframe", "1D")) != "1D":
         raise ValueError("起點敏感度目前只支援日K執行策略")
     full_frame = full_frame.reset_index(drop=True)
@@ -533,7 +544,7 @@ def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[
             max_end_idx = min(global_start_idx + max_horizon - 1, len(full_frame) - 1)
             max_end_date = pd.Timestamp(full_dates.iloc[max_end_idx])
             source = _source_slice_for_start(
-                session_bars, start_spec.date, max_end_date, warmup_bars)
+                full_daily, start_spec.date, max_end_date, warmup_bars)
             local_cfg = copy.deepcopy(strategy_cfg)
             local_cfg["signal_state_reset_date"] = str(start_spec.date.date())
             local_frame, params, mt_info = prepare_execution_frame({"1D": source}, local_cfg)
@@ -556,6 +567,13 @@ def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[
                                           f"{done}/{total_units}｜{name}｜{start_spec.date.date()}｜資料不足略過")
                     continue
                 part = local_frame.iloc[local_start_idx:end_idx].reset_index(drop=True)
+                part_dates = _date_series(part)
+                if len(part) != requested or part_dates.nunique() != requested:
+                    raise ValueError(
+                        f"起點敏感度期限不是唯一交易日：{name} {start_spec.date.date()} "
+                        f"{horizon.get('label')} requested={requested} rows={len(part)} "
+                        f"unique_trade_dates={part_dates.nunique()}"
+                    )
                 params_copy = copy.deepcopy(params)
                 params_copy.position_sizing_capital = float(initial_capital)
                 trades, equity = run_backtest(part, cost, params_copy)
