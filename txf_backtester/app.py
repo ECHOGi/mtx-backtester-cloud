@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.7.7｜多空吊燈週期隔離修正版。
+"""MTX 台指期回測平台 v0.8.8.0｜50萬元起點敏感度版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -33,11 +33,12 @@ from google_drive_uploader import (download_drive_file_bytes,
                                    list_json_files_in_drive_folder,
                                    upload_zip_result_to_drive)
 from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
+from rolling_start import run_rolling_start_sensitivity
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.7.7",
-    "release_name": "多空吊燈週期隔離修正版",
-    "build_id": "20260716-1",
+    "version": "v0.8.8.0",
+    "release_name": "50萬元起點敏感度版",
+    "build_id": "20260716-2",
 }
 try:
     _version_info = json.loads((Path(__file__).resolve().parent / "version.json").read_text(encoding="utf-8"))
@@ -266,6 +267,24 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
                        scenario["distribution"].to_csv(index=False).encode("utf-8-sig"))
             z.writestr("07_各市場狀態比較.csv",
                        scenario["state_summary"].to_csv(index=False).encode("utf-8-sig"))
+        rolling = result.get("rolling_start") or {}
+        rolling_files = [
+            ("08_起點敏感度_逐起點明細.csv", "detail"),
+            ("09_起點敏感度_市場狀態彙總.csv", "state_summary"),
+            ("10_起點敏感度_資產門檻比例.csv", "thresholds"),
+            ("11_起點敏感度_最差起點.csv", "worst"),
+            ("12_起點敏感度_最佳起點.csv", "best"),
+            ("13_起點敏感度_斷頭與歸零明細.csv", "ruin"),
+            ("14_起點敏感度_第一筆交易等待.csv", "wait"),
+            ("15_起點敏感度_策略比較.csv", "paired"),
+            ("16_起點敏感度_00631L全押逐起點.csv", "benchmark_detail"),
+            ("17_起點敏感度_00631L全押市場狀態彙總.csv", "benchmark_summary"),
+            ("18_起點敏感度_策略對正二金額比較.csv", "strategy_vs_benchmark"),
+        ]
+        for filename, key in rolling_files:
+            table = rolling.get(key)
+            if isinstance(table, pd.DataFrame):
+                z.writestr(filename, table.to_csv(index=False).encode("utf-8-sig"))
         readme = [
             f"# {batch_name}", "", f"- 平台：{APP_VERSION}",
             f"- 實際執行路徑：{len(result['seeds'])}",
@@ -307,6 +326,18 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
                        "- 未自然出場只表示模擬終點仍有持倉，不作為必須消除的錯誤。",
                        f"- 情境：{', '.join(scenario.get('scenario_states', []))}",
                        "- 回撤煞車觀察：完整分布與策略比較均包含觸發次數、煞車狀態交易日占比、平均與最低每日煞車倍率。"]
+        rolling = result.get("rolling_start") or {}
+        if rolling:
+            readme += ["", "## 50萬元起點敏感度",
+                       f"- 每月空手重設起點數：{rolling.get('start_count', '—')}",
+                       f"- 觀察期限：{', '.join(rolling.get('horizons', []))}",
+                       "- 每個起點均重新投入500,000元，不繼承持倉、待執行訊號、冷卻、封鎖或回撤煞車。",
+                       "- 市場狀態只使用起點前一根已完成日K，禁止使用未來資料。",
+                       "- 斷頭與帳戶權益<=0分開統計；斷頭後保留實際剩餘資產。",
+                       "- 每個相同起點另以500,000元盡量全押00631L，按第一個可交易日收盤買進整數股並持有至同一期末。",
+                       "- 正二全押報表會列出買進日、買進價、股數、剩餘現金、期末資產、最低資產與最大回撤。",
+                       "- 各比例是歷史不同起點的經驗分布，不是未來保證。"]
+            z.writestr("README_起點敏感度結果說明.md", "\n".join(readme).encode("utf-8"))
         readme += ["", "## 各策略部位／複利口徑"]
         for name, rep in result["representatives"].items():
             readme.append(f"- {name}：{_position_basis_text(rep['config'])}")
@@ -567,11 +598,18 @@ if run_clicked:
         if not raw_json.strip():
             raise ValueError("尚未載入策略 JSON")
         batch_name, items, batch_meta = parse_strategy_batch(raw_json, symbol=symbol)
+        experiment_type = str(batch_meta.get("experiment_type") or "").strip()
+        rolling_start_mode = experiment_type == "rolling_start_sensitivity"
+        effective_initial_capital = float(batch_meta.get("initial_capital", initial_capital)) if rolling_start_mode else float(initial_capital)
+        if rolling_start_mode and abs(effective_initial_capital - 500000.0) > 1e-6:
+            raise ValueError("起點敏感度批次目前固定使用500,000元起始資金")
         event_windows = batch_meta.get("event_windows") or []
         event_mode = bool(event_windows)
         event_warmup_trade_days = int(batch_meta.get("event_warmup_trade_days", 140) or 140)
         if event_mode and research_mode.startswith("多截止日"):
             raise ValueError("事件區間批次請使用標準回測，不與多截止日未來情境同時執行")
+        if rolling_start_mode and research_mode.startswith("多截止日"):
+            st.sidebar.caption("起點敏感度批次會自動改用專用模式，不執行一般多截止日未來情境。")
         benchmark_enabled_for_run = bool(benchmark_enabled and not event_mode)
         if event_mode:
             labels = "、".join(str(x.get("label") or "事件") for x in event_windows)
@@ -580,8 +618,8 @@ if run_clicked:
                 st.sidebar.caption("事件初選階段自動略過00631L；完整期間決選時再比較。")
         active_batch_name = batch_name
         st.sidebar.caption(f"執行中批次：{batch_name}")
-        if event_mode:
-            # 事件批次以JSON內日期為唯一口徑，避免側欄完整期間或手動日期誤裁掉事件暖機資料。
+        if event_mode or rolling_start_mode:
+            # 事件與起點敏感度批次以JSON內日期為唯一口徑，避免側欄日期裁掉暖機資料。
             filtered = preview.reset_index(drop=True)
         else:
             filtered = preview[(pd.to_datetime(preview["trade_date"]).dt.date >= start_date) &
@@ -592,7 +630,7 @@ if run_clicked:
         for name, cfg in items:
             cfg = _apply_timeframe_mode(cfg, timeframe_mode)
             cfg = apply_position_mode(
-                cfg, mode_map[position_label], initial_capital,
+                cfg, mode_map[position_label], effective_initial_capital,
                 safe_capital_per_small=safe_per_small,
                 max_small_contracts=max_small,
                 position_compounding=position_compounding)
@@ -623,7 +661,7 @@ if run_clicked:
                 "event_warmup_trade_days": int(event_warmup_trade_days),
                 "path_count": int(path_count),
                 "seed": int(base_seed),
-                "initial_capital": float(initial_capital),
+                "initial_capital": float(effective_initial_capital),
                 "symbol": symbol, "fee": float(fee), "slippage": float(slippage),
                 "use_tax": bool(use_tax), "margin_check": bool(use_margin_call_check),
             }
@@ -645,7 +683,7 @@ if run_clicked:
                 "complete": False, "status": "running", "checkpoint_type": "event_units_v1",
                 "updated_at": pd.Timestamp.now().isoformat(),
             })
-        elif research_mode.startswith("多截止日"):
+        elif research_mode.startswith("多截止日") and not rolling_start_mode:
             data_dates = pd.to_datetime(filtered["trade_date"], errors="coerce")
             checkpoint_payload = {
                 "platform": APP_VERSION,
@@ -659,7 +697,7 @@ if run_clicked:
                 "cutoffs": [str(pd.Timestamp(x).date()) for x in selected_cutoffs],
                 "paths_per_state": int(future_paths_per_state),
                 "seed": int(base_seed),
-                "initial_capital": float(initial_capital),
+                "initial_capital": float(effective_initial_capital),
                 "symbol": symbol, "fee": float(fee), "slippage": float(slippage),
                 "use_tax": bool(use_tax), "margin_check": bool(use_margin_call_check),
                 "benchmark_enabled": bool(benchmark_enabled_for_run),
@@ -687,7 +725,7 @@ if run_clicked:
         seeds = [int(base_seed + i * 7919) for i in range(int(path_count))]
         spec = SYMBOLS[symbol]
         original_margin = float(spec["margin_reference"])
-        safety_buffer_amount = max(float(initial_capital) - original_margin, 0.0)
+        safety_buffer_amount = max(float(effective_initial_capital) - original_margin, 0.0)
         cost = CostModel(
             point_value=float(spec["point_value"]), fee=float(fee),
             slippage_points=float(slippage),
@@ -696,7 +734,31 @@ if run_clicked:
             use_margin_call_check=bool(use_margin_call_check),
             safety_buffer_amount=safety_buffer_amount)
         progress = st.sidebar.progress(0, text="準備回測")
-        if event_mode:
+        benchmark_df = pd.DataFrame()
+        benchmark_info = None
+        if rolling_start_mode and benchmark_enabled_for_run:
+            data_cfg = batch_meta.get("data_period") or {}
+            bm_start = str(data_cfg.get("start") or pd.to_datetime(filtered["trade_date"]).min().date())
+            bm_end = str(data_cfg.get("end") or pd.to_datetime(filtered["trade_date"]).max().date())
+            if benchmark_source == "上傳00631L CSV":
+                uploaded_benchmark = _parse_benchmark_upload(benchmark_upload)
+                if uploaded_benchmark is None:
+                    raise ValueError("已選擇上傳00631L CSV，但尚未選擇檔案")
+                benchmark_df, benchmark_info = load_benchmark(bm_start, bm_end, uploaded=uploaded_benchmark)
+            else:
+                benchmark_df, benchmark_info = _load_benchmark_official(
+                    bm_start, bm_end, str(_benchmark_cache_path()), False)
+        if rolling_start_mode:
+            st.sidebar.info("50萬元起點敏感度模式：每月空手重設帳戶，分別觀察1／2／3年。")
+            result = run_rolling_start_sensitivity(
+                filtered, final_items, cost, effective_initial_capital, batch_meta,
+                benchmark_df=benchmark_df if benchmark_enabled_for_run else None,
+                benchmark_fee_rate=float(benchmark_fee_rate),
+                progress_callback=lambda pct, txt: progress.progress(pct, text="起點敏感度｜" + txt))
+            if benchmark_enabled_for_run:
+                result["benchmark_data"] = benchmark_df
+                result["benchmark_info"] = benchmark_info.__dict__ if benchmark_info else {}
+        elif event_mode:
             def _event_checkpoint_callback(unit, done, total):
                 save_event_unit(checkpoint_signature, unit)
                 write_checkpoint_meta(checkpoint_meta_path, {
@@ -707,19 +769,17 @@ if run_clicked:
                 })
 
             result = run_batch_event_monte_carlo(
-                filtered, final_items, cost, seeds, float(initial_capital),
+                filtered, final_items, cost, seeds, float(effective_initial_capital),
                 event_windows=event_windows, warmup_trade_days=event_warmup_trade_days,
                 progress_callback=lambda pct, txt: progress.progress(pct, text="五次事件回測｜" + txt),
                 resume_units=event_resume_units,
                 checkpoint_callback=_event_checkpoint_callback)
         else:
             result = run_batch_monte_carlo(
-                filtered, final_items, cost, seeds, float(initial_capital),
+                filtered, final_items, cost, seeds, float(effective_initial_capital),
                 progress_callback=lambda pct, txt: progress.progress(min(pct * 0.35, 0.35), text="歷史回測｜" + txt))
 
-        benchmark_df = pd.DataFrame()
-        benchmark_info = None
-        if benchmark_enabled_for_run:
+        if benchmark_enabled_for_run and not rolling_start_mode:
             if benchmark_source == "上傳00631L CSV":
                 uploaded_benchmark = _parse_benchmark_upload(benchmark_upload)
                 if uploaded_benchmark is None:
@@ -732,14 +792,14 @@ if run_clicked:
             benchmark_part = benchmark_df[(benchmark_df["date"] >= pd.Timestamp(start_date)) &
                                           (benchmark_df["date"] <= pd.Timestamp(end_date))]
             benchmark_curve = historical_buy_hold_curve(
-                benchmark_part, float(initial_capital), float(benchmark_fee_rate))
-            result["benchmark_metrics"] = benchmark_metrics(benchmark_curve, float(initial_capital))
+                benchmark_part, float(effective_initial_capital), float(benchmark_fee_rate))
+            result["benchmark_metrics"] = benchmark_metrics(benchmark_curve, float(effective_initial_capital))
             bm_annual = float(result["benchmark_metrics"].get("年化報酬率(%)", 0.0))
-            bm_end = float(result["benchmark_metrics"].get("期末資產(元)", initial_capital))
+            bm_end = float(result["benchmark_metrics"].get("期末資產(元)", effective_initial_capital))
             bm_dd = float(result["benchmark_metrics"].get("最大回撤率(%)", 0.0))
             compare = result["comparison"]
             compare["策略期末總權益(元)"] = (
-                float(initial_capital) + pd.to_numeric(compare["總損益中位數"], errors="coerce")
+                float(effective_initial_capital) + pd.to_numeric(compare["總損益中位數"], errors="coerce")
             ).round(0)
             compare["正二期末資產(元)"] = round(bm_end, 0)
             compare["期末資產差(元)"] = (compare["策略期末總權益(元)"] - bm_end).round(0)
@@ -756,7 +816,7 @@ if run_clicked:
             result["benchmark_curve"] = benchmark_curve
             result["benchmark_info"] = benchmark_info.__dict__ if benchmark_info else {}
 
-        if research_mode.startswith("多截止日"):
+        if research_mode.startswith("多截止日") and not rolling_start_mode:
             if not selected_cutoffs:
                 raise ValueError("多截止日模式至少需要選擇一個共同截止日")
             def _checkpoint_callback(chunk, done, total):
@@ -771,7 +831,7 @@ if run_clicked:
                 })
 
             scenario = run_cutoff_scenarios(
-                filtered, final_items, cost, float(initial_capital), selected_cutoffs,
+                filtered, final_items, cost, float(effective_initial_capital), selected_cutoffs,
                 benchmark_df=benchmark_df if benchmark_enabled_for_run else None,
                 benchmark_buy_fee_rate=float(benchmark_fee_rate),
                 config=ScenarioConfig(paths_per_state=int(future_paths_per_state), seed=int(base_seed)),
@@ -787,7 +847,9 @@ if run_clicked:
                 "updated_at": pd.Timestamp.now().isoformat(),
             })
         result["run_settings"] = {
-            "initial_capital": float(initial_capital),
+            "initial_capital": float(effective_initial_capital),
+            "experiment_type": experiment_type or "standard",
+            "rolling_start_mode": bool(rolling_start_mode),
             "use_margin_call_check": bool(use_margin_call_check),
             "safety_buffer_amount": safety_buffer_amount,
             "original_margin_amount": original_margin,
@@ -816,10 +878,12 @@ if run_clicked:
         st.session_state["v086_result"] = {
             "batch_name": batch_name, "display_name": display_name,
             "result": result, "zip": zip_bytes, "zip_name": zip_name,
-            "start": "五次指定事件" if event_mode else str(start_date),
-            "end": "事件區間模式" if event_mode else str(end_date),
+            "start": "多起點50萬元" if rolling_start_mode else ("五次指定事件" if event_mode else str(start_date)),
+            "end": "1／2／3年觀察" if rolling_start_mode else ("事件區間模式" if event_mode else str(end_date)),
             "requested_paths": int(path_count), "effective_paths": len(result["seeds"]),
-            "initial_capital": float(initial_capital),
+            "initial_capital": float(effective_initial_capital),
+            "experiment_type": experiment_type or "standard",
+            "rolling_start_mode": bool(rolling_start_mode),
         }
         if auth:
             parent = _secret("GDRIVE_RESULTS_PARENT_FOLDER_ID", DEFAULT_GDRIVE_RESULTS_PARENT_FOLDER_ID)
@@ -1047,6 +1111,26 @@ else:
                 st.dataframe(state_summary, use_container_width=True, hide_index=True)
         with st.expander("完整情境路徑明細", expanded=False):
             st.dataframe(scenario["distribution"], use_container_width=True, hide_index=True)
+
+    rolling = result.get("rolling_start") or {}
+    if rolling:
+        st.subheader("50萬元起點敏感度")
+        st.info("每個起點均重新投入50萬元並空手啟動；比例是歷史起點經驗分布，不是未來保證。")
+        if isinstance(rolling.get("strategy_summary"), pd.DataFrame):
+            st.dataframe(rolling["strategy_summary"], use_container_width=True, hide_index=True)
+        with st.expander("依起點市場狀態比較", expanded=True):
+            st.dataframe(rolling.get("state_summary", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("資產門檻與斷頭比例", expanded=True):
+            st.dataframe(rolling.get("thresholds", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("同日起點50萬元ALL-IN正二", expanded=True):
+            st.caption("每個起點以50萬元按00631L第一個可交易日收盤價買進整數股，剩餘零頭現金保留，持有至相同結算日。")
+            st.dataframe(rolling.get("benchmark_summary", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("策略對正二的金額與回撤比較", expanded=True):
+            st.dataframe(rolling.get("strategy_vs_benchmark", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("L16與L14共同起點配對", expanded=False):
+            st.dataframe(rolling.get("paired", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("正二逐起點買進與結算明細", expanded=False):
+            st.dataframe(rolling.get("benchmark_detail", pd.DataFrame()), use_container_width=True, hide_index=True)
 
     event_dist = result.get("event_distribution")
     if isinstance(event_dist, pd.DataFrame) and not event_dist.empty:

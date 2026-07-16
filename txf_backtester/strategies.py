@@ -648,6 +648,15 @@ def _apply_entry_group_priority_policy(out, total, reasons, groups, group_reason
     high_signal = pd.Series(False, index=out.index)
     for idx in high:
         high_signal = high_signal | groups[idx].fillna(False)
+    # v0.8.8.0 起點敏感度：指標可使用起點前暖機資料，但入口封鎖狀態不得繼承。
+    # runner 以 signal_state_reset_date 指定全新帳戶啟動日；該日前的高優先
+    # 訊號不參與 rolling 封鎖，但所有技術指標仍可正常使用暖機歷史。
+    reset_date = cfg.get("signal_state_reset_date")
+    if reset_date:
+        dates = (pd.to_datetime(out["trade_date"], errors="coerce").dt.normalize()
+                 if "trade_date" in out.columns
+                 else pd.to_datetime(out["datetime"], errors="coerce").dt.normalize())
+        high_signal = high_signal.where(dates >= pd.Timestamp(reset_date).normalize(), False)
     blocked = high_signal.rolling(bars, min_periods=1).max().astype(bool)
     new_groups = list(groups)
     new_reasons = list(group_reasons)
