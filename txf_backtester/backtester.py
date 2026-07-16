@@ -628,6 +628,41 @@ def _select_profit_tier_mult(reference_value: float, thresholds_raw, mults, fall
     return values[min(tier, len(values) - 1)]
 
 
+def _equity_risk_switch_settings(p) -> dict:
+    enabled = bool(getattr(p, "use_equity_risk_switch", False))
+    low = _positive_float(getattr(p, "equity_risk_low_fraction", None))
+    high = _positive_float(getattr(p, "equity_risk_high_fraction", None))
+    upgrade = _positive_float(getattr(p, "equity_risk_upgrade_threshold", None))
+    downgrade = _positive_float(getattr(p, "equity_risk_downgrade_threshold", None))
+    initial = str(getattr(p, "equity_risk_initial_mode", "low") or "low").lower()
+    if initial not in {"low", "high"}:
+        initial = "low"
+    valid = bool(enabled and low is not None and high is not None and upgrade is not None and high >= low)
+    if downgrade is not None and downgrade >= upgrade:
+        raise ValueError("權益風險切換的降級門檻必須小於升級門檻")
+    return {
+        "enabled": valid, "low": low, "high": high, "upgrade": upgrade,
+        "downgrade": downgrade, "initial": initial,
+        "basis": str(getattr(p, "equity_risk_switch_basis", "realized_equity") or "realized_equity"),
+    }
+
+
+def _apply_equity_risk_switch(entry_p, settings: dict, mode: str, current_equity: float) -> tuple[object, str, str]:
+    """只在空手的新進場前更新風險模式，回傳(參數, 新模式, 事件)。"""
+    if not settings.get("enabled"):
+        return entry_p, "fixed", ""
+    old = mode if mode in {"low", "high"} else settings.get("initial", "low")
+    new = old
+    event = ""
+    if old == "low" and current_equity >= float(settings["upgrade"]):
+        new, event = "high", "upgrade_to_L16"
+    elif old == "high" and settings.get("downgrade") is not None and current_equity <= float(settings["downgrade"]):
+        new, event = "low", "downgrade_to_L14"
+    values = dict(vars(entry_p)) if hasattr(entry_p, "__dict__") else {}
+    values["position_risk_fraction"] = float(settings["high"] if new == "high" else settings["low"] )
+    return SimpleNamespace(**values), new, event
+
+
 def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     """
     df   : strategies 產出的 DataFrame（需含 datetime/OHLC/long_entry/short_entry；
@@ -651,6 +686,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
     realized = 0.0    # 已實現累積損益（元）
     initial_sizing_capital = float(getattr(p, "position_sizing_capital", 0.0) or 0.0)
     realized_peak_equity = max(initial_sizing_capital, 0.0)
+    equity_risk_settings = _equity_risk_switch_settings(p)
+    equity_risk_mode = equity_risk_settings.get("initial", "low") if equity_risk_settings.get("enabled") else "fixed"
+    equity_risk_upgrade_count = 0
+    equity_risk_downgrade_count = 0
+    equity_risk_first_upgrade_date = None
+    equity_risk_first_upgrade_equity = None
     risk_cap_skipped_entries = 0
     missing_atr_skipped_entries = 0
     dynamic_size_skipped_entries = 0
@@ -682,6 +723,18 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             d = 1 if pending["direction"] == "long" else -1
             entry_p = _entry_group_params(
                 p, pending["direction"], pending.get("entry_group_index"))
+            entry_realized_equity = initial_sizing_capital + realized
+            entry_p, new_equity_risk_mode, equity_risk_switch_event = _apply_equity_risk_switch(
+                entry_p, equity_risk_settings, equity_risk_mode, entry_realized_equity)
+            if new_equity_risk_mode != equity_risk_mode:
+                if new_equity_risk_mode == "high":
+                    equity_risk_upgrade_count += 1
+                    if equity_risk_first_upgrade_date is None:
+                        equity_risk_first_upgrade_date = dt
+                        equity_risk_first_upgrade_equity = entry_realized_equity
+                elif new_equity_risk_mode == "low":
+                    equity_risk_downgrade_count += 1
+                equity_risk_mode = new_equity_risk_mode
             entry_price = row["open"] + d * cost.slippage_points  # 不利方向滑價
             entry_atr = pending.get("signal_atr")
             planned_stop_points = (_stop_distance_points(entry_p, entry_atr, entry_price)
@@ -729,6 +782,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             else:
                 position_spec = _fixed_position_spec(cost, entry_p)
 
+            if position_spec is not None:
+                position_spec.update({
+                    "equity_risk_switch_enabled": bool(equity_risk_settings.get("enabled")),
+                    "equity_risk_mode": equity_risk_mode,
+                    "equity_risk_switch_event": equity_risk_switch_event,
+                    "equity_risk_entry_realized_equity": entry_realized_equity,
+                    "equity_risk_upgrade_threshold": equity_risk_settings.get("upgrade"),
+                    "equity_risk_downgrade_threshold": equity_risk_settings.get("downgrade"),
+                    "equity_risk_upgrade_count": equity_risk_upgrade_count,
+                    "equity_risk_downgrade_count": equity_risk_downgrade_count,
+                })
             planned_stop_risk_amount = None
             position_sizing_reference_risk_amount = None
             if position_spec is not None:
@@ -896,6 +960,14 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                             "position_margin_amount": round(float(partial_spec.get("margin_amount", 0.0)), 1),
                             "maintenance_margin_amount": round(float(partial_spec.get("maintenance_margin_amount", 0.0)), 1),
                             "position_sizing_mode": str(pos.get("position_sizing_mode", "fixed")),
+                            "equity_risk_switch_enabled": bool(pos.get("equity_risk_switch_enabled", False)),
+                            "equity_risk_mode": str(pos.get("equity_risk_mode", "fixed")),
+                            "equity_risk_switch_event": str(pos.get("equity_risk_switch_event", "")),
+                            "equity_risk_entry_realized_equity": pos.get("equity_risk_entry_realized_equity"),
+                            "equity_risk_upgrade_threshold": pos.get("equity_risk_upgrade_threshold"),
+                            "equity_risk_downgrade_threshold": pos.get("equity_risk_downgrade_threshold"),
+                            "equity_risk_upgrade_count": int(pos.get("equity_risk_upgrade_count", 0)),
+                            "equity_risk_downgrade_count": int(pos.get("equity_risk_downgrade_count", 0)),
                             "pnl_points": round(partial_pts, 2), "pnl_amount": round(partial_amount, 1),
                             "holding_bars": i - pos["entry_i"] + 1, "exit_reason": "partial_r_exit",
                             "entry_reason": pos.get("entry_reason"), "entry_group_index": pos.get("entry_group_index"),
@@ -1170,6 +1242,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
                 "position_compounding": bool(pos.get("position_compounding", False)),
                 "position_equity_basis": str(pos.get("position_equity_basis", "fixed")),
                 "position_regime": str(pos.get("position_regime", "fixed")),
+                "equity_risk_switch_enabled": bool(pos.get("equity_risk_switch_enabled", False)),
+                "equity_risk_mode": str(pos.get("equity_risk_mode", "fixed")),
+                "equity_risk_switch_event": str(pos.get("equity_risk_switch_event", "")),
+                "equity_risk_entry_realized_equity": round(float(pos.get("equity_risk_entry_realized_equity")), 1)
+                    if pos.get("equity_risk_entry_realized_equity") is not None else None,
+                "equity_risk_upgrade_threshold": round(float(pos.get("equity_risk_upgrade_threshold")), 1)
+                    if pos.get("equity_risk_upgrade_threshold") is not None else None,
+                "equity_risk_downgrade_threshold": round(float(pos.get("equity_risk_downgrade_threshold")), 1)
+                    if pos.get("equity_risk_downgrade_threshold") is not None else None,
+                "equity_risk_upgrade_count": int(pos.get("equity_risk_upgrade_count", 0)),
+                "equity_risk_downgrade_count": int(pos.get("equity_risk_downgrade_count", 0)),
                 "requested_micro_units": int(pos.get("requested_micro_units") or pos.get("micro_units", 0)),
                 "previous_entry_micro_units": int(pos.get("previous_entry_micro_units", 0)),
                 "position_action": str(pos.get("position_action", "maintain")),
@@ -1338,6 +1421,17 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
             "daily_drawdown_brake_active": bool(daily_brake_multiplier < 0.999999),
             "daily_realized_equity_drawdown_pct": round(float(daily_realized_dd_pct), 6),
             "daily_realized_equity_peak": round(float(daily_realized_peak), 2),
+            "daily_equity_risk_switch_enabled": bool(equity_risk_settings.get("enabled")),
+            "daily_equity_risk_mode": equity_risk_mode,
+            "daily_equity_risk_fraction": (
+                float(equity_risk_settings.get("high")) if equity_risk_mode == "high"
+                else float(equity_risk_settings.get("low")) if equity_risk_mode == "low"
+                else float(getattr(p, "position_risk_fraction", 0.0) or 0.0)
+            ),
+            "daily_equity_risk_upgrade_count": int(equity_risk_upgrade_count),
+            "daily_equity_risk_downgrade_count": int(equity_risk_downgrade_count),
+            "daily_equity_risk_first_upgrade_date": equity_risk_first_upgrade_date,
+            "daily_equity_risk_first_upgrade_equity": equity_risk_first_upgrade_equity,
         })
 
     trades_df = pd.DataFrame(trades, columns=[
@@ -1348,7 +1442,12 @@ def run_backtest(df: pd.DataFrame, cost: CostModel, p) -> tuple:
         "large_quantity", "small_quantity", "micro_quantity", "position_micro_units",
         "point_value_total", "position_margin_amount", "maintenance_margin_amount",
         "position_sizing_mode", "position_compounding", "position_equity_basis",
-        "position_regime", "requested_micro_units",
+        "position_regime",
+        "equity_risk_switch_enabled", "equity_risk_mode", "equity_risk_switch_event",
+        "equity_risk_entry_realized_equity", "equity_risk_upgrade_threshold",
+        "equity_risk_downgrade_threshold", "equity_risk_upgrade_count",
+        "equity_risk_downgrade_count",
+        "requested_micro_units",
         "previous_entry_micro_units", "position_action", "effective_leverage",
         "margin_utilization_pct", "safe_capital_per_micro_unit", "safe_capital_used",
         "safe_capital_balance", "drawdown_reserve_amount", "gap_stress_points",

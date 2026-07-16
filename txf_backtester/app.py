@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MTX 台指期回測平台 v0.8.8.1｜50萬元起點敏感度日K修正版。
+"""MTX 台指期回測平台 v0.8.8.2｜權益門檻風險切換測試版。
 
 所有操作集中在左側；中央只呈現回測與情境比較結果。
 """
@@ -36,9 +36,9 @@ from monte_carlo_batch import run_batch_event_monte_carlo, run_batch_monte_carlo
 from rolling_start import run_rolling_start_sensitivity
 
 _VERSION_FALLBACK = {
-    "version": "v0.8.8.1",
-    "release_name": "50萬元起點敏感度日K修正版",
-    "build_id": "20260716-4",
+    "version": "v0.8.8.2",
+    "release_name": "L14→L16權益門檻切換測試版",
+    "build_id": "20260716-5",
 }
 try:
     _version_info = json.loads((Path(__file__).resolve().parent / "version.json").read_text(encoding="utf-8"))
@@ -280,6 +280,8 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
             ("16_起點敏感度_00631L全押逐起點.csv", "benchmark_detail"),
             ("17_起點敏感度_00631L全押市場狀態彙總.csv", "benchmark_summary"),
             ("18_起點敏感度_策略對正二金額比較.csv", "strategy_vs_benchmark"),
+            ("19_權益門檻切換_逐起點明細.csv", "switch_detail"),
+            ("20_權益門檻切換_策略彙總.csv", "switch_summary"),
         ]
         for filename, key in rolling_files:
             table = rolling.get(key)
@@ -336,6 +338,8 @@ def _result_zip(batch_name: str, raw_json: str, result: dict) -> bytes:
                        "- 斷頭與帳戶權益<=0分開統計；斷頭後保留實際剩餘資產。",
                        "- 每個相同起點另以500,000元盡量全押00631L，按第一個可交易日收盤買進整數股並持有至同一期末。",
                        "- 正二全押報表會列出買進日、買進價、股數、剩餘現金、期末資產、最低資產與最大回撤。",
+                       "- 權益門檻切換只在空手的新進場前判斷，使用已實現權益，不以盤中浮盈切換。",
+                       "- 19、20號報表列出升級等待、L16運作占比、降級次數及升級後最低資產。",
                        "- 各比例是歷史不同起點的經驗分布，不是未來保證。"]
             z.writestr("README_起點敏感度結果說明.md", "\n".join(readme).encode("utf-8"))
         readme += ["", "## 各策略部位／複利口徑"]
@@ -1127,6 +1131,8 @@ else:
             st.dataframe(rolling.get("benchmark_summary", pd.DataFrame()), use_container_width=True, hide_index=True)
         with st.expander("策略對正二的金額與回撤比較", expanded=True):
             st.dataframe(rolling.get("strategy_vs_benchmark", pd.DataFrame()), use_container_width=True, hide_index=True)
+        with st.expander("權益門檻切換策略比較", expanded=True):
+            st.dataframe(rolling.get("switch_summary", pd.DataFrame()), use_container_width=True, hide_index=True)
         with st.expander("L16與L14共同起點配對", expanded=False):
             st.dataframe(rolling.get("paired", pd.DataFrame()), use_container_width=True, hide_index=True)
         with st.expander("正二逐起點買進與結算明細", expanded=False):
@@ -1184,6 +1190,8 @@ else:
                 "position_action": "口數變化", "position_compounding": "複利啟用",
                 "available_equity_at_entry": "進場前部位計算權益", "effective_leverage": "有效槓桿",
                 "margin_utilization_pct": "保證金占用率(%)", "safe_capital_balance": "安全資金餘額",
+                "equity_risk_mode": "門檻風險模式", "equity_risk_switch_event": "門檻切換事件",
+                "equity_risk_entry_realized_equity": "切換判斷已實現權益",
                 "base_risk_fraction": "原始風險率", "effective_risk_fraction": "煞車後風險率",
                 "drawdown_brake_multiplier": "回撤煞車倍率", "realized_equity_drawdown_pct": "已實現權益回撤(%)",
                 "pnl_amount": "損益(元)", "holding_bars": "持有K棒", "exit_reason": "出場原因"}

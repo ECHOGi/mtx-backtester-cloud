@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v0.8.8.1：50萬元滾動起點敏感度回測（日夜盤先合成唯一交易日日K）。"""
+"""v0.8.8.2：50萬元滾動起點敏感度＋權益門檻風險切換。"""
 from __future__ import annotations
 
 import copy
@@ -234,8 +234,45 @@ def _result_row(name: str, start: StartSpec, horizon: dict, horizon_frame: pd.Da
     benchmark_return = benchmark.get("return_pct")
     forced_pnl = float(metrics.get("期末強制平倉損益(元)", 0.0) or 0.0)
     natural_pnl = float(metrics.get("扣除期末強制平倉後損益(元)", 0.0) or 0.0)
+    switch_enabled = bool(equity.get("daily_equity_risk_switch_enabled", pd.Series([False])).fillna(False).any()) if len(equity) else False
+    mode_series = equity.get("daily_equity_risk_mode", pd.Series(dtype=str)).astype(str) if len(equity) else pd.Series(dtype=str)
+    high_days = int((mode_series == "high").sum()) if len(mode_series) else 0
+    upgrade_count = int(pd.to_numeric(equity.get("daily_equity_risk_upgrade_count", pd.Series([0])), errors="coerce").fillna(0).max()) if len(equity) else 0
+    downgrade_count = int(pd.to_numeric(equity.get("daily_equity_risk_downgrade_count", pd.Series([0])), errors="coerce").fillna(0).max()) if len(equity) else 0
+    first_upgrade_date = None
+    first_upgrade_equity = None
+    if switch_enabled and "daily_equity_risk_first_upgrade_date" in equity.columns:
+        dates_up = pd.to_datetime(equity["daily_equity_risk_first_upgrade_date"], errors="coerce").dropna()
+        if len(dates_up):
+            first_upgrade_date = dates_up.iloc[0].normalize()
+            vals_up = pd.to_numeric(equity.loc[pd.to_datetime(equity["daily_equity_risk_first_upgrade_date"], errors="coerce").notna(), "daily_equity_risk_first_upgrade_equity"], errors="coerce").dropna()
+            first_upgrade_equity = float(vals_up.iloc[0]) if len(vals_up) else None
+    first_upgrade_wait = None
+    post_upgrade_min = None
+    post_upgrade_below_initial = False
+    if first_upgrade_date is not None and len(equity):
+        eq_dates = pd.to_datetime(equity["datetime"], errors="coerce").dt.normalize()
+        post = pd.to_numeric(equity.loc[eq_dates >= first_upgrade_date, "account_equity"], errors="coerce").dropna()
+        post_upgrade_min = float(post.min()) if len(post) else None
+        post_upgrade_below_initial = bool((post < float(initial_capital)).any()) if len(post) else False
+        first_upgrade_wait = int((eq_dates < first_upgrade_date).sum())
+    high_trades = int((trades.get("equity_risk_mode", pd.Series(dtype=str)).astype(str) == "high").sum()) if not trades.empty else 0
+    total_trades = int(len(trades))
     row = {
         "策略名稱": name,
+        "權益門檻風險切換": switch_enabled,
+        "首次升級L16日期": "" if first_upgrade_date is None else str(first_upgrade_date.date()),
+        "首次升級等待交易日": first_upgrade_wait,
+        "首次升級時已實現權益(元)": None if first_upgrade_equity is None else round(first_upgrade_equity, 0),
+        "升級次數": upgrade_count,
+        "降級次數": downgrade_count,
+        "總切換次數": upgrade_count + downgrade_count,
+        "期末風險模式": (mode_series.iloc[-1] if len(mode_series) else "fixed"),
+        "L16運作交易日占比(%)": round(high_days / max(len(mode_series), 1) * 100.0, 2),
+        "L16進場交易數": high_trades,
+        "L16進場交易占比(%)": round(high_trades / max(total_trades, 1) * 100.0, 2),
+        "升級後最低帳戶權益(元)": None if post_upgrade_min is None else round(post_upgrade_min, 0),
+        "升級後曾跌破原始50萬": post_upgrade_below_initial,
         "啟動日": str(start.date.date()),
         "觀察期限": str(horizon.get("label")),
         "觀察交易日": int(len(horizon_frame)),
@@ -497,6 +534,54 @@ def _source_slice_for_start(session_bars: pd.DataFrame, start_date: pd.Timestamp
     return src.loc[mask].reset_index(drop=True)
 
 
+def _switch_tables(detail: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    cols = [
+        "策略名稱", "啟動日", "觀察期限", "起點市場狀態", "期末資產(元)",
+        "最大回撤率(%)", "最低帳戶權益(元)", "權益門檻風險切換",
+        "首次升級L16日期", "首次升級等待交易日", "首次升級時已實現權益(元)",
+        "升級次數", "降級次數", "總切換次數", "期末風險模式",
+        "L16運作交易日占比(%)", "L16進場交易數", "L16進場交易占比(%)",
+        "升級後最低帳戶權益(元)", "升級後曾跌破原始50萬",
+        "維持保證金強制平倉", "帳戶權益曾小於等於0",
+        "同期00631L期末資產(元)", "期末資產超越00631L",
+    ]
+    available = [c for c in cols if c in detail.columns]
+    switch_detail = detail[available].copy()
+    rows = []
+    for (name, horizon), grp in detail.groupby(["策略名稱", "觀察期限"], dropna=False):
+        enabled = grp["權益門檻風險切換"].fillna(False).astype(bool)
+        upgraded = pd.to_numeric(grp["升級次數"], errors="coerce").fillna(0) > 0
+        terminal = pd.to_numeric(grp["期末資產(元)"], errors="coerce")
+        dd = pd.to_numeric(grp["最大回撤率(%)"], errors="coerce")
+        wait = pd.to_numeric(grp["首次升級等待交易日"], errors="coerce")
+        post_min = pd.to_numeric(grp["升級後最低帳戶權益(元)"], errors="coerce")
+        rows.append({
+            "策略名稱": name, "觀察期限": horizon, "共同起點數": int(len(grp)),
+            "啟用門檻切換": bool(enabled.any()),
+            "曾升級L16比例(%)": round(float(upgraded.mean() * 100), 2),
+            "未升級比例(%)": round(float((~upgraded).mean() * 100), 2),
+            "首次升級等待P25": round(_q(wait, .25), 1),
+            "首次升級等待P50": round(_q(wait, .50), 1),
+            "首次升級等待P75": round(_q(wait, .75), 1),
+            "升級次數P50": round(_q(grp["升級次數"], .50), 1),
+            "降級次數P50": round(_q(grp["降級次數"], .50), 1),
+            "L16運作交易日占比P50(%)": round(_q(grp["L16運作交易日占比(%)"], .50), 2),
+            "L16進場交易占比P50(%)": round(_q(grp["L16進場交易占比(%)"], .50), 2),
+            "升級後最低權益P10": round(_q(post_min, .10), 0),
+            "升級後最低權益P50": round(_q(post_min, .50), 0),
+            "升級後跌破50萬比例(%)": round(float(grp.loc[upgraded, "升級後曾跌破原始50萬"].fillna(False).mean() * 100), 2) if upgraded.any() else 0.0,
+            "期末資產P10": round(_q(terminal, .10), 0),
+            "期末資產P50": round(_q(terminal, .50), 0),
+            "期末資產P90": round(_q(terminal, .90), 0),
+            "最大回撤率P50": round(_q(dd, .50), 2),
+            "最差最大回撤率": round(float(dd.min()), 2),
+            "斷頭比例(%)": round(float(grp["維持保證金強制平倉"].fillna(False).mean() * 100), 2),
+            "歸零比例(%)": round(float(grp["帳戶權益曾小於等於0"].fillna(False).mean() * 100), 2),
+            "勝過00631L比例(%)": round(float(grp["期末資產超越00631L"].dropna().mean() * 100), 2) if grp["期末資產超越00631L"].notna().any() else np.nan,
+        })
+    return switch_detail, pd.DataFrame(rows)
+
+
 def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[str, dict]],
                                   cost: CostModel, initial_capital: float, batch_meta: dict,
                                   benchmark_df: pd.DataFrame | None = None,
@@ -612,6 +697,7 @@ def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[
     wait = detail[["策略名稱", "啟動日", "觀察期限", "起點市場狀態", "第一筆交易等待交易日", "交易次數"]].copy()
     paired = _paired_comparison(detail)
     benchmark_detail, benchmark_summary, strategy_vs_benchmark = _benchmark_tables(detail)
+    switch_detail, switch_summary = _switch_tables(detail)
     comparison = _standard_comparison(strategy_summary, initial_capital)
 
     representatives = {}
@@ -659,6 +745,8 @@ def run_rolling_start_sensitivity(session_bars: pd.DataFrame, items: list[tuple[
             "benchmark_detail": benchmark_detail,
             "benchmark_summary": benchmark_summary,
             "strategy_vs_benchmark": strategy_vs_benchmark,
+            "switch_detail": switch_detail,
+            "switch_summary": switch_summary,
             "start_count": len(starts),
             "horizons": [str(x.get("label")) for x in horizons],
         },

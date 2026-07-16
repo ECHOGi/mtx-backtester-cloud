@@ -1,0 +1,3953 @@
+{
+  "batch_name": "batch_050_L14升L16_權益門檻75_100_125_150萬與遲滯比較",
+  "platform_min_version": "v0.8.8.2",
+  "experiment_type": "rolling_start_sensitivity",
+  "initial_capital": 500000,
+  "data_period": {
+    "start": "2015-01-05",
+    "end": "2026-06-30"
+  },
+  "rolling_start_config": {
+    "start_generation": {
+      "method": "first_trading_day_of_month",
+      "start_from": "2016-04-01",
+      "start_to": "2025-06-30",
+      "classification_as_of": "previous_completed_bar",
+      "warmup_bars": 300
+    },
+    "account_reset": {
+      "reset_initial_capital_each_start": true,
+      "initial_capital": 500000,
+      "start_flat": true,
+      "inherit_open_position": false,
+      "inherit_pending_signal": false,
+      "inherit_pending_order": false,
+      "inherit_entry_group_cooldown": false,
+      "inherit_bollinger_reentry_lock": false,
+      "inherit_drawdown_brake_state": false,
+      "inherit_realized_equity_peak": false,
+      "inherit_mfe_or_trade_state": false,
+      "allow_indicator_warmup_before_start": true,
+      "evaluate_new_signal_on_start_bar": true
+    },
+    "horizons": [
+      {
+        "label": "啟動後1年",
+        "trading_days": 252
+      },
+      {
+        "label": "啟動後2年",
+        "trading_days": 504
+      },
+      {
+        "label": "啟動後3年",
+        "trading_days": 756
+      }
+    ],
+    "insufficient_future_data_policy": "omit_unavailable_horizon_keep_shorter_horizons",
+    "end_position_policy": {
+      "terminal_equity_basis": "mark_to_market",
+      "also_report_forced_close_equity": true
+    },
+    "benchmark": {
+      "symbol": "00631L",
+      "initial_capital": 500000,
+      "same_start_date": true,
+      "same_horizon": true,
+      "dividend_and_split_adjusted": true
+    },
+    "day_bar_policy": "aggregate_after_hours_and_regular_to_unique_trade_date_before_all_calculation"
+  },
+  "start_regime_classifier": {
+    "data_cutoff": "previous_completed_bar_only",
+    "features_to_export": [
+      "close",
+      "sma240",
+      "close_vs_sma240_pct",
+      "sma240_slope_20_pct",
+      "atr14_percentile_252",
+      "drawdown_from_252_high_pct"
+    ],
+    "classification_order": [
+      {
+        "label": "高波動牛市",
+        "all": [
+          {
+            "feature": "close_vs_sma240_pct",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "feature": "sma240_slope_20_pct",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "feature": "atr14_percentile_252",
+            "op": ">=",
+            "value": 70
+          }
+        ]
+      },
+      {
+        "label": "穩定牛市",
+        "all": [
+          {
+            "feature": "close_vs_sma240_pct",
+            "op": ">",
+            "value": 0
+          },
+          {
+            "feature": "sma240_slope_20_pct",
+            "op": ">",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "label": "高波動熊市／恐慌",
+        "all": [
+          {
+            "feature": "close_vs_sma240_pct",
+            "op": "<",
+            "value": 0
+          },
+          {
+            "feature": "sma240_slope_20_pct",
+            "op": "<",
+            "value": 0
+          }
+        ],
+        "any": [
+          {
+            "feature": "atr14_percentile_252",
+            "op": ">=",
+            "value": 70
+          },
+          {
+            "feature": "drawdown_from_252_high_pct",
+            "op": "<=",
+            "value": -15
+          }
+        ]
+      },
+      {
+        "label": "穩定熊市",
+        "all": [
+          {
+            "feature": "close_vs_sma240_pct",
+            "op": "<",
+            "value": 0
+          },
+          {
+            "feature": "sma240_slope_20_pct",
+            "op": "<",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "label": "高波動盤整",
+        "all": [
+          {
+            "feature": "atr14_percentile_252",
+            "op": ">=",
+            "value": 70
+          }
+        ]
+      },
+      {
+        "label": "低波動盤整",
+        "default": true
+      }
+    ]
+  },
+  "ruin_and_asset_thresholds": {
+    "must_distinguish": [
+      "maintenance_margin_forced_liquidation",
+      "account_equity_at_or_below_zero",
+      "account_equity_below_threshold_without_liquidation"
+    ],
+    "asset_thresholds": [
+      0,
+      100000,
+      250000,
+      300000,
+      400000,
+      500000,
+      750000,
+      1000000,
+      1500000
+    ],
+    "liquidation_terminal_equity_policy": "forced_liquidation後保留實際剩餘帳戶權益，不得直接寫成0；另以bankruptcy_event標示權益是否曾<=0"
+  },
+  "required_outputs": [
+    "08_起點敏感度_逐起點明細.csv",
+    "09_起點敏感度_市場狀態彙總.csv",
+    "10_起點敏感度_資產門檻比例.csv",
+    "11_起點敏感度_最差起點.csv",
+    "12_起點敏感度_最佳起點.csv",
+    "13_起點敏感度_斷頭與歸零明細.csv",
+    "14_起點敏感度_第一筆交易等待.csv",
+    "15_起點敏感度_策略比較.csv",
+    "README_起點敏感度結果說明.md",
+    "16_起點敏感度_00631L全押逐起點.csv",
+    "17_起點敏感度_00631L全押市場狀態彙總.csv",
+    "18_起點敏感度_策略對正二金額比較.csv",
+    "19_權益門檻切換_逐起點明細.csv",
+    "20_權益門檻切換_策略彙總.csv"
+  ],
+  "required_summary_metrics": [
+    "起點數",
+    "期末資產P10/P25/P50/P75/P90",
+    "最低期末資產與最高期末資產",
+    "期末低於50萬/40萬/30萬/25萬/10萬及<=0比例",
+    "期末高於75萬/100萬/150萬比例",
+    "曾發生斷頭比例",
+    "曾發生帳戶權益<=0比例",
+    "斷頭後剩餘資產P10/P50/最小值",
+    "最大回撤率P50/P75/P90/最差值",
+    "最低帳戶權益P10/P50/最小值",
+    "第一筆交易等待交易日P50/P75/P90",
+    "回到50萬元所需交易日P50/P75/P90及未恢復比例",
+    "交易次數與勝率",
+    "勝過同期00631L比例",
+    "同期00631L期末資產P10/P25/P50/P75/P90",
+    "同期00631L最低持有資產與最大回撤",
+    "同期00631L低於50萬/40萬/30萬/25萬/10萬比例",
+    "策略相對00631L資產差P10/P50/P90",
+    "策略資產與回撤雙勝00631L比例",
+    "曾升級L16比例與首次升級等待P25/P50/P75",
+    "L16運作交易日與進場交易占比",
+    "升級後最低資產及跌破原始50萬元比例",
+    "升級／降級次數、期末風險模式"
+  ],
+  "notes": [
+    "本批固定所有進出場訊號、成本、保證金、正二比較及111個歷史起點，只比較M0多單風險率的切換政策。",
+    "B14與B16為全程基準；T75/T100/T125/T150升級後不降級；H100-80與H125-100使用遲滯門檻避免頻繁切換。",
+    "門檻判斷使用已實現帳戶權益，僅在空手的新進場前切換；不得以盤中浮盈升級，也不得在持倉中途改口數。",
+    "空單S10仍使用原有安全資金部位規則，不因L14/L16模式切換而改變。",
+    "正式評估順序：零斷頭／零歸零 → P10與最低資產 → P50期末資產 → 最大回撤 → 勝過00631L比例 → 升級後跌回50萬比例。",
+    "此批屬門檻候選比較，不得只挑歷史期末資產最高者；應優先選局部穩健、門檻相鄰結果一致的政策。"
+  ],
+  "strategies": [
+    {
+      "name": "B14_全程L14",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": false,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1000000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "基準：全程使用M0風險預算14%。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "none"
+    },
+    {
+      "name": "B16_全程L16",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.16,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": false,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1000000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "high",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "基準：全程使用M0風險預算16%。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "fixed_16pct"
+    },
+    {
+      "name": "T75_達75萬升L16",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 750000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達75萬元後，下一次空手進場使用L16；升級後不自動降級。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_750000_down_0"
+    },
+    {
+      "name": "T100_達100萬升L16",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1000000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達100萬元後，下一次空手進場使用L16；升級後不自動降級。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_1000000_down_0"
+    },
+    {
+      "name": "T125_達125萬升L16",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1250000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達125萬元後，下一次空手進場使用L16；升級後不自動降級。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_1250000_down_0"
+    },
+    {
+      "name": "T150_達150萬升L16",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1500000.0,
+        "equity_risk_downgrade_threshold": 0.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達150萬元後，下一次空手進場使用L16；升級後不自動降級。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_1500000_down_0"
+    },
+    {
+      "name": "H100_80_100萬升16_80萬降14",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1000000.0,
+        "equity_risk_downgrade_threshold": 800000.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達100萬元升L16，之後跌至80萬元以下則下一次空手進場降回L14。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_1000000_down_800000"
+    },
+    {
+      "name": "H125_100_125萬升16_100萬降14",
+      "symbol": "MTX",
+      "timeframe": "1D",
+      "direction": "both",
+      "entry_long": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_bullish_alignment",
+              "ma_type": "SMA",
+              "periods": [
+                20,
+                60,
+                120
+              ]
+            },
+            {
+              "type": "macd_hist_cross_up",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "ma_slope_pct_above",
+              "ma_type": "SMA",
+              "period": 120,
+              "lookback": 20,
+              "value": 0.0
+            }
+          ],
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_cross_up_bollinger_lower",
+              "period": 20,
+              "std": 2.0
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_below_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": 0.0
+              },
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -20.0
+              },
+              {
+                "type": "close_cross_down_bollinger_lower",
+                "period": 20,
+                "std": 2.0
+              },
+              {
+                "type": "close_below_ma",
+                "ma_type": "SMA",
+                "period": 240
+              }
+            ]
+          }
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_up",
+              "ma_type": "SMA",
+              "fast": 5,
+              "slow": 10
+            }
+          ],
+          "ever": {
+            "n": 10,
+            "conditions": [
+              {
+                "type": "close_drawdown_from_high_below",
+                "lookback": 252,
+                "value": -15.0
+              },
+              {
+                "type": "atr_percentile_above",
+                "value": 70,
+                "period": 14,
+                "lookback": 252
+              }
+            ]
+          },
+          "exclude": {
+            "conditions": [
+              {
+                "type": "ma_slope_pct_below",
+                "ma_type": "SMA",
+                "period": 240,
+                "lookback": 20,
+                "value": -1.0
+              }
+            ]
+          }
+        }
+      ],
+      "entry_short": [
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "close_breakdown_low",
+              "lookback": 40
+            },
+            {
+              "type": "ma_bearish_alignment",
+              "ma_type": "EMA",
+              "periods": [
+                20,
+                90
+              ]
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "EMA",
+              "period": 90
+            },
+            {
+              "type": "di_minus_above_di_plus",
+              "period": 14
+            },
+            {
+              "type": "adx_above",
+              "period": 14,
+              "value": 20
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "macd_hist_cross_down",
+              "fast": 12,
+              "slow": 26,
+              "signal": 9
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "logic": "AND",
+          "conditions": [
+            {
+              "type": "ma_cross_down",
+              "ma_type": "SMA",
+              "fast": 20,
+              "slow": 60
+            },
+            {
+              "type": "close_below_ma",
+              "ma_type": "SMA",
+              "period": 60
+            },
+            {
+              "type": "ma_slope_pct_below",
+              "ma_type": "SMA",
+              "period": 60,
+              "lookback": 20,
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 1.0,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": true,
+        "use_signal_exit": false,
+        "minimum_holding_bars": 10,
+        "signal_exit_confirmation_bars": 1,
+        "position_sizing_capital": 500000.0,
+        "position_risk_fraction": 0.14,
+        "position_stress_multiple": 4.0,
+        "position_max_micro_units": 0,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "min_contract_count",
+        "position_max_contract_point_value": 200.0,
+        "position_sizing_mode": "dynamic_risk",
+        "position_compounding": true,
+        "use_dynamic_position_sizing": true,
+        "use_safe_capital_position_sizing": false,
+        "use_regime_position_sizing": false,
+        "use_account_margin_model": true,
+        "position_allow_downsize": true,
+        "stop_trading_after_margin_call": true,
+        "use_drawdown_risk_brake": true,
+        "position_drawdown_brake_start_pct": 5.0,
+        "position_drawdown_brake_full_pct": 16.0,
+        "position_drawdown_brake_floor": 0.45,
+        "chandelier_period": 22,
+        "chandelier_mult": 2.5,
+        "profit_tier_chandelier_period": 22,
+        "profit_tier_threshold_mode": "entry_atr",
+        "profit_tier_reference": "max_favorable",
+        "profit_tier_amounts": [],
+        "profit_tier_atr_multiples": [
+          2.0,
+          4.0,
+          6.0
+        ],
+        "profit_tier_mults": [
+          2.5,
+          3.0,
+          3.5,
+          3.5
+        ],
+        "use_profit_scaled_macd_exclusion": true,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 2.0,
+        "position_sizing_reference_atr_multiple": 1.0,
+        "use_time_invalid_exit": false,
+        "time_invalid_exit_bars": 5,
+        "time_invalid_max_favorable_atr_multiple": 0.5,
+        "time_invalid_require_losing_close": true,
+        "entry_group_exit_overrides": {},
+        "use_equity_risk_switch": true,
+        "equity_risk_low_fraction": 0.14,
+        "equity_risk_high_fraction": 0.16,
+        "equity_risk_upgrade_threshold": 1250000.0,
+        "equity_risk_downgrade_threshold": 1000000.0,
+        "equity_risk_initial_mode": "low",
+        "equity_risk_switch_basis": "realized_equity"
+      },
+      "display": {
+        "kd_period": 9,
+        "rsi_period": 14,
+        "atr_period": 14,
+        "vol_ma_period": 20,
+        "ma_periods": [
+          5,
+          10,
+          15,
+          20,
+          40,
+          60,
+          90,
+          120,
+          240
+        ]
+      },
+      "description": "從L14開始；已實現權益達125萬元升L16，之後跌至100萬元以下則下一次空手進場降回L14。",
+      "position_policy": {
+        "position_sizing_capital": 500000.0
+      },
+      "ai_source": "GPT-5.6 Thinking",
+      "strategy_style": "m0_absolute_priority_short_overlay",
+      "entry_group_exit_blocks": {
+        "1": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_above_ma",
+                "ma_type": "EMA",
+                "period": 15
+              }
+            ]
+          }
+        },
+        "3": {
+          "direction": "short",
+          "block": {
+            "logic": "AND",
+            "conditions": [
+              {
+                "type": "close_breakout_high",
+                "lookback": 5
+              }
+            ]
+          }
+        }
+      },
+      "entry_group_priority_policy": {
+        "direction": "short",
+        "higher_priority_groups": [
+          1
+        ],
+        "lower_priority_groups": [
+          2,
+          3
+        ],
+        "block_lower_after_higher_signal_bars": 10
+      },
+      "short_exit": {
+        "use_chandelier": false,
+        "use_macd_reverse": false,
+        "use_take_profit": false,
+        "use_trailing_stop": false,
+        "use_profit_tier_chandelier": false,
+        "use_account_margin_model": true,
+        "position_sizing_mode": "dynamic_safe_capital",
+        "position_compounding": true,
+        "use_safe_capital_position_sizing": true,
+        "position_safe_capital_per_micro_unit": 100000.0,
+        "position_sizing_capital": 500000.0,
+        "position_stress_multiple": 4.0,
+        "position_gap_stress_points": 500.0,
+        "position_drawdown_reserve_fraction": 0.1,
+        "position_max_micro_units": 10,
+        "position_use_stress_capital_check": true,
+        "position_micro_point_value": 10.0,
+        "position_small_point_value": 50.0,
+        "position_large_point_value": 200.0,
+        "position_micro_margin": 32000.0,
+        "position_small_margin": 159000.0,
+        "position_large_margin": 636000.0,
+        "position_micro_maintenance_margin": 24400.0,
+        "position_small_maintenance_margin": 122000.0,
+        "position_large_maintenance_margin": 488000.0,
+        "position_micro_fee": 12.0,
+        "position_small_fee": 20.0,
+        "position_large_fee": 50.0,
+        "position_contract_mix_mode": "small_micro_only",
+        "position_max_contract_point_value": 50.0,
+        "stop_trading_after_margin_call": true,
+        "use_fixed_stop": true,
+        "stop_threshold_mode": "entry_atr",
+        "stop_atr_multiple": 3.0,
+        "use_signal_exit": false,
+        "use_mfe_rebound_exit": false,
+        "mfe_rebound_activation_atr_multiple": 4.0,
+        "mfe_rebound_close_return_pct": 3.0,
+        "entry_group_exit_overrides": {
+          "1": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": true,
+            "mfe_rebound_activation_atr_multiple": 4.0,
+            "mfe_rebound_close_return_pct": 3.0
+          },
+          "2": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": true,
+            "profit_tier_chandelier_period": 10,
+            "profit_tier_threshold_mode": "entry_atr",
+            "profit_tier_reference": "max_favorable",
+            "profit_tier_amounts": [],
+            "profit_tier_atr_multiples": [
+              2.0,
+              4.0,
+              6.0
+            ],
+            "profit_tier_mults": [
+              2.5,
+              2.0,
+              1.5,
+              1.2
+            ],
+            "chandelier_exit_confirmation_bars": 2,
+            "use_mfe_rebound_exit": false
+          },
+          "3": {
+            "use_signal_exit": true,
+            "use_profit_tier_chandelier": false,
+            "use_mfe_rebound_exit": false
+          }
+        },
+        "minimum_holding_bars": 0,
+        "use_profit_scaled_macd_exclusion": false,
+        "macd_reverse_exclude_profit_amount": 0.0,
+        "macd_reverse_exclude_atr_multiple": 0.0,
+        "position_sizing_reference_atr_multiple": 0.0,
+        "use_drawdown_risk_brake": false,
+        "position_drawdown_brake_start_pct": 4.0,
+        "position_drawdown_brake_full_pct": 10.0,
+        "position_drawdown_brake_floor": 0.4,
+        "signal_exit_confirmation_bars": 1,
+        "macd_exit_confirmation_bars": 1,
+        "chandelier_exit_confirmation_bars": 1,
+        "opposite_signal_exit_bypass_minimum_holding": true,
+        "use_max_holding_exit": true,
+        "max_holding_bars": 4
+      },
+      "long_exit": {},
+      "research_notes": [
+        "乾淨逐組消融：完整基準與本策略的唯一研究變因是刪除原空單組1。短單群組刪除後，入口專屬出場與高低優先群組均依原始語意重新編號；opposite_signal_exit_policy.allowed_entry_groups固定為[1,2,3]，其含義是M0多單入口，不隨空單重編。",
+        "權益門檻只在空手的新進場前判斷。",
+        "只使用已實現帳戶權益，不使用盤中未實現損益。",
+        "空單部位規則不因L14/L16模式切換而改變。"
+      ],
+      "opposite_signal_exit_policy": {
+        "priority_direction": "long",
+        "exit_direction": "short",
+        "allowed_entry_groups": [
+          1,
+          2,
+          3
+        ]
+      },
+      "experiment_family": "L14_L16權益門檻切換",
+      "baseline_strategy": "B14_全程L14",
+      "changed_component": "equity_risk_switch_up_1250000_down_1000000"
+    }
+  ]
+}

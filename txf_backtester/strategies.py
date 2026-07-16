@@ -100,6 +100,16 @@ class StrategyParams:
     use_account_margin_model: bool = False
     position_sizing_capital: float = 500000.0
     position_risk_fraction: float = 0.04
+    # v0.8.8.2：已實現權益門檻切換。只在空手的新進場前切換風險率；
+    # 不以盤中浮盈判斷，也不在既有持倉中途變更口數。
+    use_equity_risk_switch: bool = False
+    equity_risk_low_fraction: float = 0.14
+    equity_risk_high_fraction: float = 0.16
+    equity_risk_upgrade_threshold: float = 1000000.0
+    # 0 表示升級後不自動降級；大於0時形成遲滯區間。
+    equity_risk_downgrade_threshold: float = 0.0
+    equity_risk_initial_mode: str = "low"  # low / high
+    equity_risk_switch_basis: str = "realized_equity"
     position_stress_multiple: float = 4.0
     position_max_micro_units: int = 10
     position_use_stress_capital_check: bool = True
@@ -254,7 +264,12 @@ EXIT_FIELDS = ["use_chandelier", "chandelier_period", "chandelier_mult",
                "use_entry_risk_cap", "max_entry_risk_amount",
                "use_dynamic_position_sizing", "use_account_margin_model",
                "position_sizing_capital",
-               "position_risk_fraction", "position_stress_multiple",
+               "position_risk_fraction",
+               "use_equity_risk_switch", "equity_risk_low_fraction",
+               "equity_risk_high_fraction", "equity_risk_upgrade_threshold",
+               "equity_risk_downgrade_threshold", "equity_risk_initial_mode",
+               "equity_risk_switch_basis",
+               "position_stress_multiple",
                "position_max_micro_units", "position_use_stress_capital_check",
                "position_micro_point_value", "position_small_point_value", "position_large_point_value",
                "position_micro_margin", "position_small_margin", "position_large_margin",
